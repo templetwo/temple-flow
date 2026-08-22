@@ -48,6 +48,7 @@ Data refresh → Technical + Macro packages → Strategist ideas
 - Schemas: SQLite store, ticket JSON, audit events (`schemas/`)
 - Runbooks: shadow mode + home unblock checklist (`runbooks/`)
 - GitHub remote: https://github.com/templetwo/temple-flow (push pending Cursor GitHub reconnect)
-- Historical backfill: blocked on universe + data source paths
+- Universe: crypto hybrid — spot majors for signals, Schwab IBIT/FBTC/ETHA for live (`docs/UNIVERSE.md`)
+- Historical backfill: blocked on crypto data source paths/feeds (5y daily default)
 - Schwab OAuth / execution path: deferred
 - Mode: **shadow** until human opens live
