@@ -38,7 +38,7 @@ Data refresh → Technical + Macro packages → Strategist ideas
 
 ## Capital
 
-- **$1,000** research allocation
+- Research capital = **live Schwab equity** (baseline 2026-08-22: ~$95.63)
 - Broker: Schwab (local/Mac Studio API path; no unsupervised agent sends)
 - Mode: shadow/paper until human opens live under ticket approval
 

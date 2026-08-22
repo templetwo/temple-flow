@@ -11,9 +11,11 @@ This document is the single source of truth for the Temple Flow research-capital
 
 | Field | Value |
 | --- | --- |
-| Research allocation | **$1,000** |
+| Research capital | **Live Schwab equity** (no fixed $1,000 placeholder) |
+| Baseline snapshot | **2026-08-22 ~19:42 ET** — equity/liquidation **$95.63**; cash **$2.15**; long **NVO** 2 sh MTM **$93.48**; account …8585 MARGIN |
+| Sizing basis | Risk Manager always sizes against **current live equity** from Schwab, not a stale target |
 | Purpose | Temple of Two / Spiral research funding experiment |
-| Broker | Charles Schwab (live credentials held by human / secure store) |
+| Broker | Charles Schwab (Mac Studio spiral-broker OAuth; human ticket gate) |
 | Success metric | Reliable process, zero unsupervised risk, full provenance — **not** “make money” |
 
 ---
