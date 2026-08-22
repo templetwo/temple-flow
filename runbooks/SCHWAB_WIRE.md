@@ -44,3 +44,10 @@ Then: read-only `accountNumbers` probe → set `SCHWAB_ACCOUNT_HASH` in `.env`.
 ## Bridge script
 
 `scripts/schwab_status.py` — read-only status for Desk Lead / Execution.
+
+## Status (2026-08-22 evening ET)
+
+- Re-auth **OK** via HTTPS `127.0.0.1:8080` + local certs
+- Tokens valid; `SCHWAB_ACCOUNT_HASH` populated on Mac spiral-broker envs
+- Read-only probes: accountNumbers 200; quotes IBIT/ETHA 200
+- Live sends still require exact `approve TF-YYYYMMDD-XX`
