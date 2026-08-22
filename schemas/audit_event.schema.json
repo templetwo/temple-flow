@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TempleFlowAuditEvent",
+  "type": "object",
+  "required": ["ts_utc", "actor", "event_type", "summary"],
+  "properties": {
+    "ts_utc": { "type": "string", "format": "date-time" },
+    "actor": {
+      "type": "string",
+      "description": "Funds-beast|Data & Backfill|Market Technical|Macro Sentiment|Strategist|Risk Manager|Execution|Research Digest|human"
+    },
+    "event_type": {
+      "enum": [
+        "data_refresh",
+        "backfill_complete",
+        "backfill_gap",
+        "technical_package",
+        "macro_package",
+        "strategist_idea",
+        "risk_veto",
+        "ticket_opened",
+        "ticket_awaiting_human",
+        "ticket_approved",
+        "ticket_rejected",
+        "ticket_expired",
+        "order_sent",
+        "fill",
+        "send_rejected",
+        "circuit_breaker",
+        "brief_posted",
+        "attribution",
+        "note"
+      ]
+    },
+    "ticket_id": { "type": ["string", "null"] },
+    "symbol": { "type": ["string", "null"] },
+    "summary": { "type": "string" },
+    "refs": {
+      "type": "object",
+      "description": "Pointers to packages, files, or provenance ids",
+      "additionalProperties": true
+    }
+  }
+}

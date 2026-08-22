@@ -1,0 +1,50 @@
+{
+  "ticket_id": "TF-20260822-01",
+  "created_at_utc": "2026-08-22T14:05:00Z",
+  "expires_at_utc": "2026-08-22T14:35:00Z",
+  "mode": "shadow",
+  "status": "risk_sized",
+  "symbol": "SPY",
+  "side": "buy",
+  "entry": { "type": "limit", "price": 560.0, "zone_low": 558.5, "zone_high": 560.5 },
+  "stop": 554.0,
+  "target": 572.0,
+  "size": { "qty": 2, "notional_usd": 1120.0, "pct_equity": 11.2 },
+  "risk": {
+    "risk_usd": 12.0,
+    "risk_pct_equity": 1.2,
+    "r_multiple_to_target": 2.0,
+    "commission_slippage_usd": 1.5,
+    "atr_14": 4.2,
+    "atr_60d_avg": 3.1,
+    "atr_filter_triggered": false,
+    "constitution_checks": {
+      "max_risk_ok": true,
+      "max_position_ok": true,
+      "max_positions_ok": true,
+      "daily_loss_ok": true,
+      "drawdown_ok": true,
+      "hard_stop_present": true
+    }
+  },
+  "book": {
+    "equity_usd": 1000.0,
+    "peak_equity_usd": 1000.0,
+    "open_positions": 0,
+    "daily_pnl_usd": 0.0
+  },
+  "rationale": "EXAMPLE ONLY — shadow template. Not a live idea. Replace with Strategist rationale + Risk sizing from real packages.",
+  "evidence": {
+    "technical_ref": "pending",
+    "macro_ref": "pending",
+    "strategist_ref": "pending",
+    "data_as_of_utc": null
+  },
+  "approvals": {
+    "human_phrase_required": "approve TF-20260822-01",
+    "human_approved": false,
+    "approved_at_utc": null,
+    "approver_note": null
+  },
+  "execution": null
+}

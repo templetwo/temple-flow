@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TechnicalPackage",
+  "type": "object",
+  "required": ["as_of_utc", "symbol", "session_date", "indicators", "levels", "regime", "atr", "source_bars"],
+  "properties": {
+    "as_of_utc": { "type": "string", "format": "date-time" },
+    "symbol": { "type": "string" },
+    "session_date": { "type": "string" },
+    "indicators": {
+      "type": "object",
+      "description": "RSI, MACD, Bollinger, MA crosses, etc. with values only — no narrative"
+    },
+    "levels": {
+      "type": "object",
+      "properties": {
+        "support": { "type": "array", "items": { "type": "number" } },
+        "resistance": { "type": "array", "items": { "type": "number" } }
+      }
+    },
+    "regime": { "type": "string" },
+    "atr": {
+      "type": "object",
+      "required": ["atr_14", "atr_60d_avg", "ratio", "filter_trigger"],
+      "properties": {
+        "atr_14": { "type": "number" },
+        "atr_60d_avg": { "type": "number" },
+        "ratio": { "type": "number" },
+        "filter_trigger": { "type": "boolean", "description": "true when atr_14 > 1.8 * atr_60d_avg" }
+      }
+    },
+    "source_bars": { "type": "string", "description": "provenance pointer / candle range" },
+    "score": { "type": ["number", "null"] }
+  }
+}

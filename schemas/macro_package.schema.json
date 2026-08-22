@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MacroSentimentPackage",
+  "type": "object",
+  "required": ["as_of_utc", "regime", "series", "sentiment", "sources"],
+  "properties": {
+    "as_of_utc": { "type": "string", "format": "date-time" },
+    "regime": { "type": "string" },
+    "series": {
+      "type": "object",
+      "description": "DXY, VIX, yields, etc. — values with timestamps; no trade instructions"
+    },
+    "sentiment": {
+      "type": "object",
+      "properties": {
+        "score": { "type": ["number", "null"] },
+        "label": { "type": ["string", "null"] },
+        "notes": { "type": "string" }
+      }
+    },
+    "sources": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1
+    }
+  }
+}

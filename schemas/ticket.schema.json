@@ -1,0 +1,158 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://templeoftwo.local/temple-flow/ticket.schema.json",
+  "title": "TempleFlowTicket",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "ticket_id",
+    "created_at_utc",
+    "mode",
+    "status",
+    "symbol",
+    "side",
+    "entry",
+    "stop",
+    "target",
+    "size",
+    "risk",
+    "book",
+    "rationale",
+    "evidence",
+    "approvals"
+  ],
+  "properties": {
+    "ticket_id": {
+      "type": "string",
+      "pattern": "^TF-[0-9]{8}-[0-9]{2}$",
+      "description": "TF-YYYYMMDD-XX"
+    },
+    "created_at_utc": { "type": "string", "format": "date-time" },
+    "expires_at_utc": { "type": "string", "format": "date-time" },
+    "mode": { "enum": ["shadow", "paper", "live"] },
+    "status": {
+      "enum": [
+        "draft",
+        "risk_sized",
+        "awaiting_human",
+        "approved",
+        "rejected",
+        "expired",
+        "sent",
+        "filled",
+        "partial_fill",
+        "send_rejected",
+        "closed"
+      ]
+    },
+    "symbol": { "type": "string", "minLength": 1 },
+    "side": { "enum": ["buy", "sell", "buy_to_cover", "sell_short"] },
+    "entry": {
+      "type": "object",
+      "required": ["type", "price"],
+      "properties": {
+        "type": { "enum": ["market", "limit", "stop", "stop_limit"] },
+        "price": { "type": ["number", "null"] },
+        "zone_low": { "type": ["number", "null"] },
+        "zone_high": { "type": ["number", "null"] }
+      }
+    },
+    "stop": { "type": "number" },
+    "target": { "type": ["number", "null"] },
+    "size": {
+      "type": "object",
+      "required": ["qty", "notional_usd", "pct_equity"],
+      "properties": {
+        "qty": { "type": "number", "exclusiveMinimum": 0 },
+        "notional_usd": { "type": "number", "exclusiveMinimum": 0 },
+        "pct_equity": { "type": "number", "exclusiveMinimum": 0, "maximum": 18 }
+      }
+    },
+    "risk": {
+      "type": "object",
+      "required": [
+        "risk_usd",
+        "risk_pct_equity",
+        "r_multiple_to_target",
+        "commission_slippage_usd",
+        "atr_14",
+        "atr_60d_avg",
+        "atr_filter_triggered",
+        "constitution_checks"
+      ],
+      "properties": {
+        "risk_usd": { "type": "number" },
+        "risk_pct_equity": { "type": "number", "maximum": 2.5 },
+        "r_multiple_to_target": { "type": ["number", "null"] },
+        "commission_slippage_usd": { "type": "number", "minimum": 0 },
+        "atr_14": { "type": ["number", "null"] },
+        "atr_60d_avg": { "type": ["number", "null"] },
+        "atr_filter_triggered": { "type": "boolean" },
+        "constitution_checks": {
+          "type": "object",
+          "required": [
+            "max_risk_ok",
+            "max_position_ok",
+            "max_positions_ok",
+            "daily_loss_ok",
+            "drawdown_ok",
+            "hard_stop_present"
+          ],
+          "properties": {
+            "max_risk_ok": { "type": "boolean" },
+            "max_position_ok": { "type": "boolean" },
+            "max_positions_ok": { "type": "boolean" },
+            "daily_loss_ok": { "type": "boolean" },
+            "drawdown_ok": { "type": "boolean" },
+            "hard_stop_present": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    "book": {
+      "type": "object",
+      "required": ["equity_usd", "peak_equity_usd", "open_positions", "daily_pnl_usd"],
+      "properties": {
+        "equity_usd": { "type": "number" },
+        "peak_equity_usd": { "type": "number" },
+        "open_positions": { "type": "integer", "minimum": 0, "maximum": 4 },
+        "daily_pnl_usd": { "type": "number" }
+      }
+    },
+    "rationale": { "type": "string", "minLength": 1 },
+    "evidence": {
+      "type": "object",
+      "required": ["technical_ref", "macro_ref", "strategist_ref"],
+      "properties": {
+        "technical_ref": { "type": "string" },
+        "macro_ref": { "type": "string" },
+        "strategist_ref": { "type": "string" },
+        "data_as_of_utc": { "type": "string", "format": "date-time" }
+      }
+    },
+    "approvals": {
+      "type": "object",
+      "required": ["human_phrase_required", "human_approved"],
+      "properties": {
+        "human_phrase_required": {
+          "type": "string",
+          "pattern": "^approve TF-[0-9]{8}-[0-9]{2}$"
+        },
+        "human_approved": { "type": "boolean" },
+        "approved_at_utc": { "type": ["string", "null"], "format": "date-time" },
+        "approver_note": { "type": ["string", "null"] }
+      }
+    },
+    "execution": {
+      "type": ["object", "null"],
+      "properties": {
+        "sent_at_utc": { "type": "string", "format": "date-time" },
+        "broker": { "const": "schwab" },
+        "broker_order_id": { "type": ["string", "null"] },
+        "fill_price": { "type": ["number", "null"] },
+        "fill_qty": { "type": ["number", "null"] },
+        "raw_status": { "type": ["string", "null"] }
+      }
+    }
+  }
+}
