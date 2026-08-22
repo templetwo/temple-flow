@@ -36,7 +36,7 @@ Macro context (not trade ideas): DXY, VIX, US10Y (existing Macro lane).
 
 **Lookback (default until overridden):** 5 years daily bars; intraday (1h) only after daily is validated.
 
-**Data sources (pending paths):** goldbrick / spiral-broker if they have crypto; else approved public spot feeds (must record provenance; no invented bars).
+**Data sources:** approved public OHLC — Kraken, then Coinbase, Yahoo fallback (see `docs/DATA_CONVENTIONS.md`). Studio goldbrick/spiral paths override when provided.
 
 ---
 
