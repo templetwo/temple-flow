@@ -8,6 +8,6 @@
 ## Still open
 1. **Optional Studio paths:** goldbrick / spiral-broker if they include crypto (override public feeds).
 2. **Lookback override:** default 5y daily.
-3. **Schwab OAuth / callback:** after first backfill.
+3. **Schwab OAuth:** app keys present on Mac (`spiral-broker`); refresh expired 2026-01 — re-auth on Mac (`runbooks/SCHWAB_WIRE.md`).
 4. **Live switch:** explicit human command.
 5. **Spot venue later:** Kraken execution only after constitution amendment + connector.
