@@ -1,0 +1,97 @@
+{
+  "ticket_id": "TF-20260822-N1",
+  "created_at_utc": "2026-08-23T00:28:00Z",
+  "expires_at_utc": "2026-08-23T00:58:00Z",
+  "desk": "Funds-beast",
+  "lane": "Micro Velocity",
+  "operator": "Anthony",
+  "mode": "live",
+  "status": "submitted_pending_activation",
+  "symbol": "NVO",
+  "side": "sell",
+  "action": "trim_funding",
+  "qty": 1,
+  "entry": {
+    "type": "limit",
+    "price": 46.74,
+    "instruction": "LIMIT sell 1 @ 46.74 (mark); if no bid refresh use marketable limit \u226446.50. MARKET ok if funding urgency. REFRESH mark before send."
+  },
+  "stop": null,
+  "target": null,
+  "size": {
+    "qty": 1,
+    "notional_usd": 46.74,
+    "pct_equity": 48.88
+  },
+  "risk": {
+    "risk_usd": 0.0,
+    "risk_pct_equity": 0.0,
+    "r_multiple_to_target": null,
+    "commission_slippage_usd": 0.02,
+    "atr_14": null,
+    "atr_60d_avg": null,
+    "atr_filter_triggered": false,
+    "atr_note": "incomplete \u2014 trim not sized on ATR",
+    "constitution_checks": {
+      "max_risk_ok": true,
+      "max_position_ok": true,
+      "max_positions_ok": true,
+      "daily_loss_ok": true,
+      "drawdown_ok": true,
+      "hard_stop_present": false,
+      "hard_stop_note": "Funding trim of existing long; residual 1 NVO still needs protective stop (book hygiene, separate)."
+    }
+  },
+  "book": {
+    "equity_usd": 95.63,
+    "peak_equity_usd": 95.63,
+    "cash_before": 2.15,
+    "cash_after_est": 48.89,
+    "nvo_before": 2,
+    "nvo_after": 1,
+    "open_positions_before": 1,
+    "open_positions_after": 1,
+    "daily_pnl_usd": 0.0,
+    "marks_as_of": "2026-08-22 ~19:42\u201320:20 ET \u2014 REFRESH_NEEDED before Execution"
+  },
+  "funding_check": "N/A_SELL \u2014 creates cash \u224848.89 for N2",
+  "depends_on": null,
+  "unlocks": "TF-20260822-N2",
+  "rationale": "Live upgrade of shadow trim path. Sell 1 NVO to fund Micro Velocity 1-share buy. De-risks 97.8% NVO concentration; residual 1 NVO ~48.9% equity still oversize (flag).",
+  "evidence": {
+    "technical_ref": "Micro Velocity shadow pack 2026-08-22",
+    "macro_ref": "weekend thin \u2014 funding mechanical",
+    "strategist_ref": "Desk Lead path N1\u2192N2; Anthony Run it",
+    "data_as_of_utc": "2026-08-22T23:42:00Z"
+  },
+  "approvals": {
+    "human_phrase_required": "approve TF-20260822-N1",
+    "human_approved": true,
+    "approved_at_utc": "2026-08-23T00:34:00Z",
+    "window_minutes": 30,
+    "approved_in": "Execution chat exact phrase"
+  },
+  "execution": {
+    "broker": "schwab",
+    "path": "Mac Studio spiral-broker",
+    "submitted_at_utc": "2026-08-23T00:36:01Z",
+    "http_status": 201,
+    "order_id": "1007682739594",
+    "status": "PENDING_ACTIVATION",
+    "filled_qty": 0.0,
+    "remaining_qty": 1.0,
+    "params_sent": {
+      "side": "SELL",
+      "symbol": "NVO",
+      "qty": 1,
+      "orderType": "LIMIT",
+      "price": 46.74,
+      "duration": "DAY",
+      "session": "NORMAL"
+    },
+    "note": "Weekend/off-hours; DAY limit queued for next RTH (PENDING_ACTIVATION). Exact ticket params. No N2.",
+    "provenance": "Execution agent; human approve TF-20260822-N1 in Execution chat"
+  },
+  "session_note": "US cash equity \u2014 outside RTH as of ticket stamp; expect fill Monday open / extended if enabled.",
+  "note": "NO Execution until exact approve TF-20260822-N1. Sequence: N1 fill before N2 send."
+}

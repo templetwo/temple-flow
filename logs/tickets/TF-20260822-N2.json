@@ -1,0 +1,85 @@
+{
+  "ticket_id": "TF-20260822-N2",
+  "created_at_utc": "2026-08-23T00:28:00Z",
+  "expires_at_utc": "2026-08-23T00:58:00Z",
+  "desk": "Funds-beast",
+  "lane": "Micro Velocity",
+  "operator": "Anthony",
+  "mode": "live",
+  "status": "awaiting_human_approve",
+  "symbol": "NOK",
+  "side": "buy",
+  "action": "buy",
+  "qty": 1,
+  "entry": {
+    "type": "limit",
+    "price": 10.18,
+    "zone_low": 10.05,
+    "zone_high": 10.30,
+    "instruction": "LIMIT buy 1 in 10.05–10.30 (prefer mid 10.18). Do NOT chase above 10.30. Contingent on N1 fill + cash ≥ notional."
+  },
+  "stop": 9.45,
+  "target": 11.00,
+  "size": {
+    "qty": 1,
+    "notional_usd": 10.30,
+    "pct_equity": 10.77
+  },
+  "risk": {
+    "risk_usd": 0.87,
+    "risk_pct_equity": 0.91,
+    "risk_basis": "worst entry 10.30 − stop 9.45 + slip 0.02",
+    "r_multiple_to_target": 0.80,
+    "commission_slippage_usd": 0.02,
+    "atr_14": 0.40,
+    "atr_60d_avg": null,
+    "atr_filter_triggered": false,
+    "atr_note": "provisional ATR~0.40; 60d avg missing — filter incomplete, treat as not triggered",
+    "constitution_checks": {
+      "max_risk_ok": true,
+      "max_position_ok": true,
+      "max_position_note": "MV lane — 18% position cap OFF (amendment 2026-08-22)",
+      "max_positions_ok": true,
+      "daily_loss_ok": true,
+      "drawdown_ok": true,
+      "hard_stop_present": true
+    }
+  },
+  "book": {
+    "equity_usd": 95.63,
+    "peak_equity_usd": 95.63,
+    "cash_post_n1_est": 48.89,
+    "cash_after_buy_est": 38.59,
+    "open_positions_after": 2,
+    "positions_after": ["NVO 1", "NOK 1"],
+    "daily_pnl_usd": 0.0,
+    "max_risk_usd": 2.39,
+    "marks_as_of": "2026-08-22 evening ET — REFRESH_NEEDED before Execution"
+  },
+  "funding_check": "PASS if N1 filled — cash≈48.89 ≥ 10.30; FAIL if N1 not filled (cash 2.15)",
+  "depends_on": "TF-20260822-N1",
+  "vehicle_choice": "NOK preferred — complete entry/stop/target from MV pack; risk $0.87 ≪ $2.39. IBIT/ETHA/FBTC not chosen: no MV-defined stops in pack (Risk will not invent stops).",
+  "alternates_not_taken": [
+    {"symbol": "F", "note": "PASS alt not add-on"},
+    {"symbol": "AAL", "note": "PASS alt not add-on"},
+    {"symbol": "IBIT", "note": "skipped — no defined stop in pack"},
+    {"symbol": "ETHA", "note": "skipped — no defined stop in pack"},
+    {"symbol": "FBTC", "note": "skipped — no defined stop in pack"}
+  ],
+  "rationale": "Live upgrade Micro Velocity primary: 1sh NOK after NVO funding trim. Binding constraint risk-at-stop 0.91% < 2.5%. One buy only.",
+  "evidence": {
+    "technical_ref": "Micro Velocity shadow pack F/NOK/AAL 2026-08-22",
+    "macro_ref": "weekend thin liquidity — low confidence; mechanical recovery lane",
+    "strategist_ref": "Desk Lead NOK primary; Anthony Run it",
+    "data_as_of_utc": "2026-08-22T23:42:00Z"
+  },
+  "approvals": {
+    "human_phrase_required": "approve TF-20260822-N2",
+    "human_approved": false,
+    "approved_at_utc": null,
+    "window_minutes": 30
+  },
+  "execution": null,
+  "session_note": "US cash equity — outside RTH as of ticket stamp; expect fill Monday open / extended if enabled. Send N2 only after N1 fill confirmed.",
+  "note": "NO Execution until exact approve TF-20260822-N2 AND N1 filled."
+}

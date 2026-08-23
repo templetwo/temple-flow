@@ -1,0 +1,57 @@
+{
+  "title": "Temple Flow Shadow Desk Brief",
+  "as_of_et": "2026-08-22 evening (weekend)",
+  "mode": "shadow",
+  "data_status": "Primary+secondary crypto daily backfill OK through 2026-08-21; Schwab auth valid",
+  "book": {
+    "equity": 95.63,
+    "cash": 2.15,
+    "peak_baseline": 95.63,
+    "positions": "NVO 2"
+  },
+  "regime": "Crypto: violent 1d bounce with RSI 77\u201388 across universe; ATR filter clear; tf_trend_vol_v1 still trend_down (method lag \u2014 treat with caution)",
+  "opportunities": "None actionable on Schwab at current equity under constitution. Shadow ideas vetoed by max-position rule.",
+  "risk": "Circuit breakers clear. New risk halted by structure (share size vs 18% cap), not by daily-loss breaker.",
+  "tickets": [
+    {
+      "ticket_id": "TF-20260822-01",
+      "mode": "shadow",
+      "status": "risk_veto",
+      "symbol": "IBIT",
+      "side": "buy",
+      "qty": 1,
+      "ref_price": 44.3815,
+      "notional": 44.3815,
+      "pct_equity": 46.41,
+      "max_position_pct": 18,
+      "veto_reason": "1 share IBIT \u224846.4% equity > 18% max position; cash only $2.15 (would require selling NVO and still fail cap)",
+      "signal": "BTC-USD RSI overbought rip; vehicle map BTC\u2192IBIT"
+    },
+    {
+      "ticket_id": "TF-20260822-02",
+      "mode": "shadow",
+      "status": "risk_veto",
+      "symbol": "ETHA",
+      "side": "buy",
+      "qty": 1,
+      "ref_price": 18.98,
+      "notional": 18.98,
+      "pct_equity": 19.85,
+      "max_position_pct": 18,
+      "veto_reason": "1 share ETHA \u224819.8% equity > 18% max position",
+      "signal": "ETH-USD RSI overbought rip; vehicle map ETH\u2192ETHA"
+    }
+  ],
+  "system_demo_ok": [
+    "Historical DB \u2192 technical snapshot",
+    "Live Schwab book + quotes",
+    "Ticket IDs + Risk constitution enforcement",
+    "Human gate intact (no sends attempted)"
+  ],
+  "next_options": [
+    "Top up capital so 1 IBIT \u2264 18% equity (need equity \u2265 IBIT/0.18 \u2248 $247 for 1 IBIT)",
+    "Amend max-position temporarily for micro-account (Desk Lead will not do silently)",
+    "Rotate NVO under ticket protocol first (still may not fit IBIT)",
+    "Keep shadow research on spot crypto until capital fits vehicles"
+  ]
+}
