@@ -19,3 +19,11 @@ __pycache__/
 .venv/
 node_modules/
 .DS_Store
+
+# Act-loop local arm (never commit)
+config/LIVE_OK
+config/standing_rules.json
+config/mv_session.json
+logs/schwab_account_snapshot.json
+logs/schwab_oauth_reauth.log
+tf-actloop.patch

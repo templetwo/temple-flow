@@ -8,7 +8,7 @@
 | Live tickets (Day-1) | Schwab-listed crypto products | Keeps Risk Constitution + Schwab account intact |
 | Later (optional) | Spot venue (e.g. Kraken) | Full spot execution when wired + constitution amended |
 
-Mode remains **shadow** until Anthony opens live.
+Live is **on** (Schwab). Operating surface is the 2026-08-28 cut-down: ETHA + IBIT entries only.
 
 ---
 
@@ -42,19 +42,20 @@ Macro context (not trade ideas): DXY, VIX, US10Y (existing Macro lane).
 
 ## B. Live execution universe (Schwab)
 
-Sized tickets may only target these until a spot venue is added to the constitution:
+**Live entries (law 2026-08-28):** ETHA and IBIT only.
 
-| Symbol | Underlying exposure |
+| Symbol | Role |
 | --- | --- |
-| IBIT | Bitcoin |
-| FBTC | Bitcoin (alt vehicle) |
-| ETHA | Ethereum |
-
-Start live with **IBIT + ETHA** only if book is small ($1k); FBTC optional when correlation/vehicle choice matters.
+| ETHA | Live entry (Ethereum) |
+| IBIT | Live entry (Bitcoin) |
+| NVO | Leftover — **protect only** (stop). Not a strategy. |
+| NOK | Leftover — **protect only** (stop). Not a strategy. |
+| FBTC | Not a live vehicle unless this file is amended again |
+| F / AAL / other | Out. No floor debate before a send. |
 
 Mapping rule for Strategist/Risk:
 
-- Spot signal on `BTC-USD` → candidate live vehicle `IBIT` (or `FBTC`)
+- Spot signal on `BTC-USD` → candidate live vehicle `IBIT`
 - Spot signal on `ETH-USD` → candidate live vehicle `ETHA`
 - Spot signal on `SOL-USD` / alts → **research-only** until a Schwab vehicle exists or spot venue is approved; do not force a bad proxy
 

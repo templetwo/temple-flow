@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Temple Flow Act loop. --live gated by config/LIVE_OK on disk. -->
+    <!-- Grok Desktop is off the send path. This is a normal launchd job. -->
+    <key>Label</key>
+    <string>com.templetwo.temple-flow-wire</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/tony_studio/spiral-broker-prod/dashboard/api/venv_new/bin/python3</string>
+        <string>/Users/tony_studio/temple-flow/scripts/temple_flow_wire.py</string>
+        <string>--once</string>
+        <string>--live</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/tony_studio/temple-flow</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>SPIRAL_BROKER_ROOT</key>
+        <string>/Users/tony_studio/spiral-broker</string>
+        <key>TEMPLE_FLOW_LIVE</key>
+        <string>1</string>
+    </dict>
+    <!-- Simple RTH-ish cadence: every 15 minutes. The script no-ops new
+         entries outside weekday 09:00–16:00 America/New_York (Mac TZ).
+         Tighter alternative (commented): StartCalendarInterval array of
+         Weekday 1-5, Hour 9-16, Minute 0/15/30/45. -->
+    <key>StartInterval</key>
+    <integer>900</integer>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/Users/tony_studio/Library/Logs/temple-flow-wire.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/tony_studio/Library/Logs/temple-flow-wire.log</string>
+</dict>
+</plist>

@@ -1,0 +1,52 @@
+{
+  "arm_required": true,
+  "armed_hint": false,
+  "universe": ["ETHA", "IBIT"],
+  "no_day": true,
+  "no_chase": true,
+  "equity_hint": 596.86,
+  "peak_hint": 596.86,
+  "_comment_equity": "Hint only for box dry-run. Live size always from Schwab equity. 2026-08-28 $500 deposit is not P&L.",
+  "risk": {
+    "risk_pct": 0.025,
+    "day_breaker_pct": 0.045,
+    "peak_dd_pct": 0.18,
+    "max_opens": 4
+  },
+  "protect": {
+    "NVO": {
+      "stop": 42.5,
+      "duration": "GTC",
+      "confirm_tonight": true,
+      "_comment": "Anthony must confirm NVO stop 42.50 tonight before any --live protect. Residual 1 share, currently naked."
+    },
+    "NOK": {
+      "stop": 9.45,
+      "duration": "GTC",
+      "already_working": true,
+      "_comment": "NOK 9.45 GTC already working (1007691287449). Do not duplicate. Protect only — no adds."
+    }
+  },
+  "entries": {
+    "ETHA": {
+      "enabled": true,
+      "qty": 5,
+      "limit": 18.7,
+      "stop": 17.7,
+      "cap": 18.9,
+      "duration": "GTC",
+      "_comment": "5 ETHA @ 18.70 GTC / stop 17.70. Qty clipped so (limit-stop)*qty <= 2.5% of live equity (~$14.92 on $597). No DAY. No chase through 18.90."
+    },
+    "IBIT": {
+      "enabled": false,
+      "qty": null,
+      "limit": null,
+      "stop": null,
+      "cap": null,
+      "hold_reclaim": null,
+      "require_hold_reclaim": true,
+      "duration": "GTC",
+      "_comment": "No IBIT entry unless last <= a hold/reclaim level. Level left null/disabled."
+    }
+  }
+}
