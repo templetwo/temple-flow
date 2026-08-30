@@ -16,6 +16,7 @@ Grok Desktop is not the wire. Floor debate is not on the send path.
 3. Live names: ETHA, IBIT. NVO/NOK = protect only.
 4. One mutation: GTC pullback + attached stop. Through cap = dead.
 5. Success = in the thesis with a stop on.
+6. One-sell law (2026-08-30): never a second SELL on a share that already has a stop. Flatten = RTH cancel-stop then OCO. See `docs/AMENDMENTS_2026-08-30.md`.
 
 Risk box unchanged: 2.5% / 4.5% day / 18% peak DD / hard stops / no unsupervised size / live Schwab equity.
 
@@ -40,6 +41,7 @@ Risk box unchanged: 2.5% / 4.5% day / 18% peak DD / hard stops / no unsupervised
 - Nine-seat debate before a $19 ETF send.
 - DAY limits that die at AIRCO.
 - Stop-after-fill as a second Auto-review card.
+- A second SELL (LIMIT flatten or OCO) on a share that already has a stop.
 - Replacing a stale bid up through the Risk cap.
 - Treating ticket theater as the success metric.
 

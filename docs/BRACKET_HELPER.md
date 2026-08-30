@@ -41,3 +41,17 @@ def place_gtc_bracket(...):
 5. `config/LIVE_OK` + `TEMPLE_FLOW_LIVE=1` for that one session. launchd plist stays `--once` dry-run.
 
 Until those exist, cash idle and a dry-run daemon are the correct Act loop.
+
+
+## 2026-08-30 live proof (why the helper must be OCO, not two singles)
+
+Sunday after hours, ETHA already had STOP 17.70 `PENDING_ACTIVATION`. A second SELL LIMIT 19.80 was **REJECTED**. An OCO posted *without* canceling that stop was **REJECTED**. Cancel of the pending-activation stop returned HTTP **400**.
+
+Implication for the helper:
+
+1. Entry path: one POST, GTC LIMIT BUY + attached GTC STOP. That is the only sell on the share.
+2. Flatten path: RTH only. Cancel (or REPLACE) the existing stop, then one OCO (LIMIT take-profit XOR STOP). Never POST a second standalone SELL.
+3. After hours: no flatten retry. Leave the stop. Next RTH replace.
+4. Two singles is not an OCO. Schwab treats the stop as owning the share.
+
+See `docs/AMENDMENTS_2026-08-30.md`.
