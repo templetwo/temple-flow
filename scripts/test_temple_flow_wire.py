@@ -996,6 +996,50 @@ class TestOutboxIdempotencyAndExceptions(unittest.TestCase):
             t2 = [a for a in out2 if a.get("op") == "outbox_ticket"][0]
             self.assertEqual(t2["execute"], "skip_already_sent")
 
+    def test_two_tickets_same_symbol_in_one_cycle_post_once(self):
+        """The book is fetched ONCE per cycle. Without in-cycle bookkeeping the
+        duplicate guard cannot see an order this same cycle just placed."""
+        with tempfile.TemporaryDirectory() as tmpdir, recording_broker() as calls:
+            root = Path(tmpdir)
+            self._repo_with_ticket(root, ticket(id="TF-A", qty=5))
+            self._repo_with_ticket(root, ticket(id="TF-B", qty=5))
+            out = run_cycle(
+                example_rules(),
+                base_book(),
+                live=True,
+                broker_note="test",
+                repo_root=root,
+            )
+        brackets = [p for p in calls["post"] if p.get("orderStrategyType") == "TRIGGER"]
+        self.assertEqual(len(brackets), 1, "two tickets, one symbol, one order")
+        results = [a for a in out if a.get("op") == "outbox_ticket"]
+        self.assertEqual(results[0]["execute"], "posted")
+        self.assertEqual(results[1]["execute"], "refused")
+        self.assertIn(
+            results[1]["reason"],
+            ("existing_entry_in_book", "duplicate_working_order",
+             "one_sell_law_existing_sell"),
+            results[1],
+        )
+
+    def test_in_cycle_order_is_not_immediately_abandoned(self):
+        """The injected order must carry GOOD_TILL_CANCEL, or plan_actions'
+        no_day branch cancels the bracket the outbox just placed."""
+        with tempfile.TemporaryDirectory() as tmpdir, recording_broker() as calls:
+            root = Path(tmpdir)
+            self._repo_with_ticket(root, ticket(id="TF-A", qty=5))
+            out = run_cycle(
+                example_rules(),
+                base_book(),
+                live=True,
+                broker_note="test",
+                repo_root=root,
+            )
+        etha = [a for a in out if a.get("symbol") == "ETHA" and a.get("op") != "skip"]
+        self.assertTrue(any(a["op"] == "leave" for a in etha), etha)
+        self.assertFalse(any(a["op"] == "cancel_abandon" for a in etha), etha)
+        self.assertEqual(calls["cancel"], [])
+
     def test_unreadable_ticket_is_quarantined(self):
         with tempfile.TemporaryDirectory() as tmpdir, recording_broker():
             root = Path(tmpdir)

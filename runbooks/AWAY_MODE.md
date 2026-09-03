@@ -86,6 +86,13 @@ To install deliberately live (only at the Studio, only when ready):
 That creates `config/LIVE_OK`, refusing if standing rules still have enabled
 entries.
 
+> **Timing note.** `--live-ok` now creates `LIVE_OK` **before** `launchctl load`,
+> so that the mode the installer prints is the mode it actually loads. The plist
+> sets `RunAtLoad`, which means **the first live cycle fires immediately**, not
+> 900s later. Under the previous ordering the flag was created after the load, so
+> the first tick refused and the first live cycle was a quarter hour away. Be at
+> the glass when you pass `--live-ok`.
+
 ## Ticket outbox
 
 One-off approved tickets go in `config/outbox/*.json`. A ticket is picked up only
@@ -129,6 +136,11 @@ same gates a planned entry is:
    symbol+side+qty+limit (duplicate).
 9. **Cancel tickets** — the `order_id` must be a working order in the book, on a
    live-universe symbol, and the DELETE only fires inside RTH.
+10. **In-cycle bookkeeping** — the book is fetched once per cycle, so a placed
+    order is recorded into the in-memory book immediately. Two approved tickets
+    for the same symbol in one cycle result in one order: the second sees the
+    first and is refused. Without this, guards 8 and the `max_opens` box would
+    be blind precisely when two tickets arrive together.
 
 ### What happens to a ticket
 

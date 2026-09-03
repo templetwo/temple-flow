@@ -1579,6 +1579,51 @@ def gate_outbox_ticket(
     return None, detail
 
 
+def record_in_cycle_order(book: dict, detail: dict, order_id: Any) -> None:
+    """Append a just-placed bracket's legs to the in-memory book.
+
+    The cycle holds one book snapshot. Every guard that reads the book —
+    existing_entry, existing_sell, duplicate_working_order, position/max_opens —
+    must be able to see an order this cycle already placed, or the guard is
+    blind exactly when two tickets arrive together.
+
+    duration MUST be GOOD_TILL_CANCEL: plan_actions runs after the outbox on
+    this same book, and its no_day branch would plan a cancel_abandon on the
+    bracket the outbox just placed if the leg looked like a DAY order.
+    """
+    oid = str(order_id or "in_cycle")
+    sym = detail["symbol"]
+    qty = detail["ticket_qty"]
+    book.setdefault("orders", []).extend(
+        [
+            {
+                "id": oid,
+                "symbol": sym,
+                "side": "BUY",
+                "status": "WORKING",
+                "type": "LIMIT",
+                "price": detail["limit"],
+                "duration": "GOOD_TILL_CANCEL",
+                "qty": qty,
+                "remaining": qty,
+                "in_cycle": True,
+            },
+            {
+                "id": oid + "-stop",
+                "symbol": sym,
+                "side": "SELL",
+                "status": "PENDING_ACTIVATION",
+                "type": "STOP",
+                "stopPrice": detail["stop"],
+                "duration": "GOOD_TILL_CANCEL",
+                "qty": qty,
+                "remaining": qty,
+                "in_cycle": True,
+            },
+        ]
+    )
+
+
 def stamp_ticket_order_id(path: Path, ticket: dict, order_id: Any) -> bool:
     """Write the broker order_id back into the ticket file, atomically.
 
@@ -1681,6 +1726,13 @@ def execute_outbox_ticket(
         out["sent"] = posted
         out["mutated"] = posted
         out["execute"] = "posted" if posted else "post_failed"
+        if posted:
+            # The book is fetched ONCE per cycle and handed to every ticket and
+            # then to plan_actions. Without this, the duplicate / one-sell /
+            # max_opens guards are blind to an order placed moments ago in this
+            # same cycle: two approved tickets on one symbol would both clear
+            # every gate and both POST. Record what we just placed.
+            record_in_cycle_order(book, detail, res.get("order_id"))
         if posted and path is not None:
             # stamp BEFORE the move — idempotency does not depend on the move
             out["stamped"] = stamp_ticket_order_id(
