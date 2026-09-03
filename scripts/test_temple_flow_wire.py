@@ -55,6 +55,15 @@ def example_rules() -> dict:
 
 
 def base_book(**kw) -> dict:
+    """A book that stands in for a COMPLETE, PROVEN Schwab read.
+
+    source and the *_ok flags are part of the fixture on purpose. Both are
+    fail-closed in the wire: only source == "schwab_read" may drive a live
+    POST/DELETE, and a book-derived gate refuses unless the leg it depends on
+    is proven. A fixture that omitted them would test the refusal path
+    everywhere and never the permit path. Pass orders_ok=False / quotes_ok=False
+    / source="fallback_hint" to exercise a degraded read.
+    """
     book = {
         "equity": 596.86,
         "peak_equity": 596.86,
@@ -67,8 +76,15 @@ def base_book(**kw) -> dict:
             {"symbol": "NOK", "qty": 1},
         ],
         "orders": [],
-        "quotes": {"ETHA": {"last": 18.50}, "IBIT": {"last": 45.00}},
-        "source": "test",
+        "quotes": {
+            "ETHA": {"last": 18.50},
+            "IBIT": {"last": 45.00},
+            "NVO": {"last": 45.81},
+            "NOK": {"last": 10.20},
+        },
+        "orders_ok": True,
+        "quotes_ok": True,
+        "source": "schwab_read",
     }
     book.update(kw)
     return book
@@ -367,7 +383,7 @@ class TestCancelById(unittest.TestCase):
                 "params": {"order_id": "1007750322357"},
             }
             result = execute_action(
-                action, live=True, rth=True, repo_root=Path(tmpdir)
+                action, live=True, rth=True, repo_root=Path(tmpdir), book=base_book()
             )
         self.assertEqual(captured["order_id"], "1007750322357")
         self.assertEqual(result["execute"], "canceled")
@@ -386,7 +402,7 @@ class TestCancelById(unittest.TestCase):
                 "params": {"order_id": "1007750322357"},
             }
             result = execute_action(
-                action, live=True, rth=True, repo_root=Path(tmpdir)
+                action, live=True, rth=True, repo_root=Path(tmpdir), book=base_book()
             )
             self.assertIs(result["sent"], False)
             self.assertIs(result["mutated"], False)
@@ -433,7 +449,7 @@ class TestCancelGuards(unittest.TestCase):
                 "params": {"order_id": "1007750322357"},
             }
             result = execute_action(
-                action, live=True, rth=False, repo_root=Path(tmpdir)
+                action, live=True, rth=False, repo_root=Path(tmpdir), book=base_book()
             )
         self.assertEqual(result["execute"], "cancel_deferred_outside_rth")
         self.assertIs(result["sent"], False)
@@ -455,8 +471,12 @@ class TestCancelGuards(unittest.TestCase):
             root = Path(tmpdir)
             (root / "config").mkdir()
             with patched("cancel_by_id", mock_cancel):
-                first = execute_action(action, live=True, rth=True, repo_root=root)
-                second = execute_action(action, live=True, rth=True, repo_root=root)
+                first = execute_action(
+                    action, live=True, rth=True, repo_root=root, book=base_book()
+                )
+                second = execute_action(
+                    action, live=True, rth=True, repo_root=root, book=base_book()
+                )
             self.assertEqual(first["execute"], "cancel_refused_400_after_hours")
             self.assertEqual(second["execute"], "cancel_skipped_refused_today")
             self.assertEqual(len(calls), 1, "400 must not be retried every tick")
@@ -481,8 +501,22 @@ class TestCancelGuards(unittest.TestCase):
             root = Path(tmpdir)
             (root / "config").mkdir()
             with patched("cancel_by_id", mock_cancel):
-                execute_action(action, live=True, rth=True, repo_root=root, now=day1)
-                execute_action(action, live=True, rth=True, repo_root=root, now=day2)
+                execute_action(
+                    action,
+                    live=True,
+                    rth=True,
+                    repo_root=root,
+                    now=day1,
+                    book=base_book(),
+                )
+                execute_action(
+                    action,
+                    live=True,
+                    rth=True,
+                    repo_root=root,
+                    now=day2,
+                    book=base_book(),
+                )
         self.assertEqual(len(calls), 2, "a new trading day gets one more attempt")
 
 
@@ -1055,6 +1089,417 @@ class TestOutboxIdempotencyAndExceptions(unittest.TestCase):
                 repo_root=root,
             )
             self.assertTrue((outbox / "failed" / "bad.json").exists())
+
+
+def studio_shaped_rules() -> dict:
+    """The EXAMPLE file bent into the shape of the Studio's live rules.
+
+    Standing rule 1 forbids reading config/standing_rules.json, so the two live
+    facts that made B2 fire are reproduced here explicitly: armed_hint true, and
+    an enabled IBIT entry. Nothing reads the live file.
+    """
+    r = example_rules()
+    r["armed_hint"] = True
+    r["entries"]["IBIT"].update(
+        {
+            "enabled": True,
+            "qty": 2,
+            "limit": 43.90,
+            "stop": 41.20,
+            "cap": 44.50,
+            "hold_reclaim": None,
+            "require_hold_reclaim": False,
+        }
+    )
+    return r
+
+
+class TestHintBookAnswersNoGate(unittest.TestCase):
+    """B2. fallback_book hardcoded in_rth True and took armed from a config hint.
+
+    resolve_book substitutes that book whenever fetch_book returns None, which a
+    transient 500 on the accounts endpoint does with valid tokens and a working
+    POST path.
+    """
+
+    def test_fallback_book_states_neither_armed_nor_rth(self):
+        book = temple_flow_wire.fallback_book(studio_shaped_rules())
+        self.assertNotIn("armed", book, "armed_hint must not answer the arm gate")
+        self.assertNotIn("in_rth", book, "a config file must not answer the clock")
+        # coverage is stated False, not merely absent
+        self.assertIs(book["orders_ok"], False)
+        self.assertIs(book["quotes_ok"], False)
+
+    def test_resolve_book_stamps_the_real_session_armed(self):
+        """The hint book's armed comes from session_armed(), not armed_hint."""
+        rules = studio_shaped_rules()
+        self.assertTrue(rules["armed_hint"])
+        with patched("session_armed", lambda *a, **k: False):
+            book, note = temple_flow_wire.resolve_book(rules)
+        self.assertEqual(book["source"], "fallback_hint")
+        self.assertIs(book["armed"], False, "expired session must win over the hint")
+        self.assertNotIn("in_rth", book)
+
+    def test_expired_arm_and_sunday_plan_no_ibit_buy(self):
+        """The reviewer's measured B2 case, end to end.
+
+        Before the fix: armed=True (hint), in_rth=True (hardcoded), orders=[] →
+        plan_actions plans place_gtc_bracket IBIT qty 2 @ 43.90 and
+        execute_action(live=True) returns 'posted'. Outside RTH, on an expired
+        arm, duplicating a working order.
+        """
+        rules = studio_shaped_rules()
+        with patched("session_armed", lambda *a, **k: False), patched(
+            "in_rth", lambda now=None: False
+        ):
+            book, _ = temple_flow_wire.resolve_book(rules)
+            actions = plan_actions(rules, book)
+        ibit = [a for a in actions if a.get("symbol") == "IBIT"]
+        self.assertTrue(ibit)
+        self.assertFalse(
+            any(a["op"] == "place_gtc_bracket" for a in ibit),
+            f"live BUY outside RTH on an expired arm: {ibit}",
+        )
+        blocked = [a for a in ibit if a["reason"] == "new_risk_blocked"]
+        self.assertTrue(blocked, ibit)
+        reasons = blocked[0]["params"]["blocked"]
+        self.assertIn("arm_required", reasons)
+        self.assertIn("outside_rth", reasons)
+        self.assertIn("orders_unproven", reasons)
+
+    def test_hint_book_never_reaches_the_wire(self):
+        """Boundary copy: even a planned action refuses on a non-schwab_read book."""
+        rules = studio_shaped_rules()
+        with patched("session_armed", lambda *a, **k: False):
+            book, _ = temple_flow_wire.resolve_book(rules)
+        action = {
+            "op": "place_protect_stop",
+            "symbol": "NVO",
+            "reason": "protect_only_no_adds",
+            "params": {"qty": 1, "stop": 42.5, "side": "SELL"},
+        }
+        with no_network():
+            out = execute_action(action, live=True, rth=True, book=book)
+        self.assertEqual(out["execute"], "refused")
+        self.assertEqual(out["reason"], "book_not_schwab_read")
+        self.assertIs(out["sent"], False)
+        self.assertIs(out["mutated"], False)
+
+    def test_hint_book_never_reaches_the_wire_for_a_cancel_either(self):
+        """The DELETE half of the boundary.
+
+        The five adapted cancel tests all pass a schwab_read book, so they
+        exercise only the permit side: if book_is_live_eligible were ever
+        inverted they would all still pass. This is the refusal side for a
+        cancel, and precedence is asserted because AWAY_MODE.md lists both
+        refusals as distinct diagnostics — eligibility is checked first, so it
+        wins even on a symbol the universe check would also reject.
+        """
+        rules = studio_shaped_rules()
+        with patched("session_armed", lambda *a, **k: True):
+            book, _ = temple_flow_wire.resolve_book(rules)
+        with no_network():
+            in_universe = execute_action(
+                {
+                    "op": "cancel_abandon",
+                    "symbol": "ETHA",
+                    "params": {"order_id": "555"},
+                },
+                live=True,
+                rth=True,
+                book=book,
+            )
+            leftover = execute_action(
+                {
+                    "op": "cancel_abandon",
+                    "symbol": "NOK",
+                    "params": {"order_id": "1007691287449"},
+                },
+                live=True,
+                rth=True,
+                book=book,
+            )
+        for out in (in_universe, leftover):
+            self.assertEqual(out["execute"], "refused")
+            self.assertEqual(out["reason"], "book_not_schwab_read")
+            self.assertIs(out["mutated"], False)
+
+    def test_execute_action_refuses_when_no_book_is_supplied(self):
+        with no_network():
+            out = execute_action(
+                {"op": "place_protect_stop", "symbol": "NVO", "params": {}},
+                live=True,
+                rth=True,
+            )
+        self.assertEqual(out["reason"], "book_missing")
+
+    def test_outbox_ticket_refuses_on_a_hint_book(self):
+        rules = studio_shaped_rules()
+        with patched("session_armed", lambda *a, **k: True), patched(
+            "in_rth", lambda now=None: True
+        ):
+            book, _ = temple_flow_wire.resolve_book(rules)
+            with no_network():
+                out = execute_outbox_ticket(
+                    {"ticket": ticket(qty=5)}, live=True, rules=rules, book=book
+                )
+        self.assertEqual(out["execute"], "refused")
+        self.assertIn(out["reason"], ("orders_unproven", "book_not_schwab_read"))
+
+
+class TestPartialBrokerReadFailsClosed(unittest.TestCase):
+    """B1. A non-200 on the orders or quotes sub-call left an EMPTY collection
+    behind with no flag, and every gate this branch added is book-derived."""
+
+    def test_blind_orders_block_both_protect_stops(self):
+        """The reviewer's measured case (b): duplicate protect stops on NVO+NOK.
+
+        That is the second SELL Schwab rejected on 2026-08-30 — the exact
+        rejection the one-sell law exists to prevent.
+        """
+        rules = example_rules()
+        book = base_book(orders_ok=False)
+        actions = plan_actions(rules, book)
+        for sym in ("NVO", "NOK"):
+            rows = [a for a in actions if a.get("symbol") == sym]
+            self.assertTrue(rows, sym)
+            self.assertFalse(
+                any(a["op"] == "place_protect_stop" for a in rows),
+                f"blind book must not post a protect stop for {sym}: {rows}",
+            )
+            self.assertTrue(
+                any(a["reason"] == "protect_blocked_orders_unproven" for a in rows),
+                rows,
+            )
+
+    def test_blind_orders_block_a_new_entry(self):
+        rules = example_rules()
+        rules["entries"]["ETHA"]["enabled"] = True
+        actions = plan_actions(rules, base_book(orders_ok=False))
+        etha = [a for a in actions if a.get("symbol") == "ETHA"]
+        self.assertFalse(any(a["op"] == "place_gtc_bracket" for a in etha), etha)
+        blocked = [a for a in etha if a["reason"] == "new_risk_blocked"]
+        self.assertIn("orders_unproven", blocked[0]["params"]["blocked"])
+
+    def test_blind_quotes_block_a_new_entry(self):
+        """last_above_hold_reclaim and through_cap_idea_dead only fire when last
+        is not None, so blind quotes make BOTH skip and the entry proceed."""
+        rules = example_rules()
+        rules["entries"]["ETHA"]["enabled"] = True
+        actions = plan_actions(rules, base_book(quotes_ok=False, quotes={}))
+        etha = [a for a in actions if a.get("symbol") == "ETHA"]
+        self.assertFalse(any(a["op"] == "place_gtc_bracket" for a in etha), etha)
+        blocked = [a for a in etha if a["reason"] == "new_risk_blocked"]
+        self.assertIn("quotes_unproven", blocked[0]["params"]["blocked"])
+
+    def test_a_proven_book_still_permits_the_entry(self):
+        """The gate must be able to SAY YES.
+
+        Without this, every test above passes on a gate that simply never opens.
+        """
+        rules = example_rules()
+        rules["entries"]["ETHA"]["enabled"] = True
+        actions = plan_actions(rules, base_book())
+        etha = [a for a in actions if a.get("symbol") == "ETHA"]
+        self.assertTrue(
+            any(a["op"] == "place_gtc_bracket" for a in etha),
+            f"a complete read must still be allowed to trade: {etha}",
+        )
+
+    def test_blind_orders_refuse_the_outbox_ticket(self):
+        """Measured case (a): with orders=[] the duplicate ticket POSTs."""
+        reason, _ = gate_outbox_ticket(
+            ticket(qty=11), example_rules(), base_book(orders_ok=False)
+        )
+        self.assertEqual(reason, "orders_unproven")
+
+    def test_the_same_ticket_is_refused_by_the_true_book(self):
+        """Proves the flag is not blanket-blocking: with the orders leg PROVEN
+        and the real order in the book, the refusal is the specific one."""
+        book = base_book(
+            orders=[
+                {
+                    "id": "1007762031724",
+                    "symbol": "ETHA",
+                    "side": "BUY",
+                    "status": "WORKING",
+                    "type": "LIMIT",
+                    "price": 18.70,
+                    "duration": "GOOD_TILL_CANCEL",
+                    "qty": 11,
+                    "remaining": 11,
+                }
+            ]
+        )
+        reason, _ = gate_outbox_ticket(ticket(qty=11), example_rules(), book)
+        self.assertEqual(reason, "existing_entry_in_book")
+        # and with an empty-but-proven book the same ticket clears
+        self.assertIsNone(gate_outbox_ticket(ticket(qty=11), example_rules(),
+                                             base_book())[0])
+
+    def test_blind_cancel_lane_says_so_instead_of_going_quiet(self):
+        actions = plan_actions(example_rules(), base_book(orders_ok=False))
+        self.assertTrue(
+            any(a["reason"] == "cancel_lane_orders_unproven" for a in actions),
+            actions,
+        )
+
+    def test_degraded_live_cycle_posts_nothing(self):
+        """End to end: a partial read drives a whole live cycle and no broker
+        helper is reached at all."""
+        with tempfile.TemporaryDirectory() as tmpdir, no_network():
+            out = run_cycle(
+                example_rules(),
+                base_book(orders_ok=False, quotes_ok=False),
+                live=True,
+                broker_note="test",
+                repo_root=Path(tmpdir),
+            )
+        self.assertFalse(any(a.get("sent") for a in out), out)
+        self.assertFalse(any(a.get("mutated") for a in out), out)
+
+
+class TestProtectLaneStaleStop(unittest.TestCase):
+    def test_stop_at_or_above_last_is_refused(self):
+        """A stop above the bid is not protection, it is a market SELL on the
+        next open."""
+        rules = example_rules()
+        rules["protect"]["NVO"]["stop"] = 46.00  # above last 45.81
+        actions = plan_actions(rules, base_book())
+        nvo = [a for a in actions if a.get("symbol") == "NVO"]
+        self.assertFalse(any(a["op"] == "place_protect_stop" for a in nvo), nvo)
+        self.assertTrue(
+            any(
+                a["reason"] == "protect_stop_at_or_above_last_would_market_sell"
+                for a in nvo
+            ),
+            nvo,
+        )
+
+    def test_a_stop_below_last_still_places(self):
+        actions = plan_actions(example_rules(), base_book())
+        nvo = [a for a in actions if a.get("symbol") == "NVO"]
+        self.assertTrue(any(a["op"] == "place_protect_stop" for a in nvo), nvo)
+
+    def test_unproven_quotes_do_not_block_protection(self):
+        """Deliberate: the duplicate check is what makes this lane safe, and it
+        is satisfied. Only the stale-stop check needs quotes."""
+        actions = plan_actions(example_rules(), base_book(quotes_ok=False, quotes={}))
+        nvo = [a for a in actions if a.get("symbol") == "NVO"]
+        self.assertTrue(any(a["op"] == "place_protect_stop" for a in nvo), nvo)
+
+
+class TestOutboxCarriesTheNoChaseLaw(unittest.TestCase):
+    """Suggestion 2. AWAY_MODE.md: the outbox is not a side door around the
+    standing rules, and the rules state the cap as an idea-level threshold."""
+
+    def test_ticket_limit_above_cap_is_refused(self):
+        # entries.ETHA.cap is 18.90 in the example file
+        reason, detail = gate_outbox_ticket(
+            ticket(qty=5, limit=19.50, stop=18.50), example_rules(), base_book()
+        )
+        self.assertEqual(reason, "ticket_limit_above_cap")
+        self.assertEqual(detail["cap"], 18.9)
+
+    def test_last_through_cap_kills_the_ticket(self):
+        book = base_book(quotes={"ETHA": {"last": 18.95}})
+        reason, _ = gate_outbox_ticket(ticket(qty=5), example_rules(), book)
+        self.assertEqual(reason, "through_cap_idea_dead")
+
+    def test_a_ticket_under_the_cap_still_clears(self):
+        reason, _ = gate_outbox_ticket(ticket(qty=11), example_rules(), base_book())
+        self.assertIsNone(reason)
+
+
+class TestInCycleCancelVisibility(unittest.TestCase):
+    """Suggestion 1. The twin of the bug db02dce closed, on the cancel half."""
+
+    def test_one_cancel_per_order_per_cycle(self):
+        book = base_book(
+            orders=[
+                {
+                    "id": "555",
+                    "symbol": "ETHA",
+                    "side": "BUY",
+                    "status": "WORKING",
+                    "type": "LIMIT",
+                    "price": 18.75,
+                    "duration": "DAY",  # no_day makes plan_actions want it gone
+                    "qty": 1,
+                    "remaining": 1,
+                }
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmpdir, recording_broker() as calls:
+            root = Path(tmpdir)
+            outbox = root / "config" / "outbox"
+            outbox.mkdir(parents=True)
+            (outbox / "TF-CANCEL.json").write_text(
+                json.dumps(ticket(id="TF-CANCEL", action="cancel_by_id", order_id="555"))
+            )
+            run_cycle(
+                example_rules(), book, live=True, broker_note="test", repo_root=root
+            )
+        self.assertEqual(
+            calls["cancel"],
+            ["555"],
+            "the planner must see the outbox's cancel, not re-fire it",
+        )
+
+    def test_record_marks_the_order_not_working(self):
+        book = base_book(
+            orders=[{"id": 555, "symbol": "ETHA", "status": "WORKING", "side": "BUY"}]
+        )
+        temple_flow_wire.record_in_cycle_cancel(book, "555")
+        self.assertIsNone(working_order_by_id(book, "555"))
+
+
+class TestExecuteBoundaryDefenses(unittest.TestCase):
+    def test_execute_refuses_a_cancel_outside_the_universe(self):
+        """Suggestion 6. The universe restriction lived only in the planner."""
+        with no_network():
+            out = execute_action(
+                {
+                    "op": "cancel_abandon",
+                    "symbol": "NOK",
+                    "params": {"order_id": "1007691287449"},
+                },
+                live=True,
+                rth=True,
+                book=base_book(),
+            )
+        self.assertEqual(out["execute"], "refused")
+        self.assertEqual(out["reason"], "cancel_symbol_not_in_live_universe")
+
+    def test_planner_exception_is_quarantined_not_fatal(self):
+        """Suggestion 5. Neither schwab_post_order nor cancel_by_id wraps
+        requests, so a network error used to abort the rest of the cycle."""
+
+        def exploding_stop(**kw):
+            raise ConnectionError("connection reset by peer")
+
+        with tempfile.TemporaryDirectory() as tmpdir, recording_broker(), patched(
+            "place_protect_stop", exploding_stop
+        ):
+            out = run_cycle(
+                example_rules(),
+                base_book(),
+                live=True,
+                broker_note="test",
+                repo_root=Path(tmpdir),
+            )
+        stops = [a for a in out if a.get("op") == "place_protect_stop"]
+        self.assertEqual(len(stops), 2, out)
+        for s in stops:
+            self.assertEqual(s["execute"], "exception")
+            self.assertEqual(s["error"], "ConnectionError")
+            self.assertIs(s["sent"], False)
+            self.assertIs(s["mutated"], False)
+        # the cycle still finished: the entry lane ran behind the failure
+        self.assertTrue(
+            any(a.get("reason") == "entry_disabled" for a in out),
+            "actions behind the exception must still be executed",
+        )
 
 
 if __name__ == "__main__":

@@ -140,7 +140,54 @@ same gates a planned entry is:
     order is recorded into the in-memory book immediately. Two approved tickets
     for the same symbol in one cycle result in one order: the second sees the
     first and is refused. Without this, guards 8 and the `max_opens` box would
-    be blind precisely when two tickets arrive together.
+    be blind precisely when two tickets arrive together. A **cancel** is
+    recorded the same way, so the planner cannot re-fire a DELETE on an order
+    the outbox just canceled in the same tick.
+11. **No chase through cap** — `limit` must be at or under `entries[sym].cap`,
+    and if quotes are proven, `last` must be too. The 2026-08-28 law is an
+    idea-level threshold ("through cap = idea dead"), so it binds a
+    human-approved ticket exactly as it binds the planner's own lane.
+12. **Read coverage** — see below. Every guard from 5 to 11 is book-derived, so
+    a ticket is refused outright when the leg it depends on is unproven.
+
+### A degraded broker read refuses; it does not proceed on an empty book
+
+`fetch_book` makes three independent HTTP calls. A failure on the **accounts**
+call aborts the read, but a failure on **orders** or **quotes** used to leave an
+empty collection behind with no signal — and every guard in the wire is
+book-derived, so an orders call that 500s handed the gates an empty book and
+they all passed. The book now carries `orders_ok` / `quotes_ok`, and **absence
+of the flag is not permission**: any book that does not state its coverage is
+treated as unproven.
+
+| Reason you will see in the log | What it means |
+|---|---|
+| `protect_blocked_orders_unproven` | Orders leg failed. The protect lane will not post a stop it cannot prove is not a duplicate — that duplicate is the second SELL Schwab rejected on 2026-08-30. |
+| `orders_unproven` / `quotes_unproven` (inside `new_risk_blocked`) | No new entry. Blind quotes are the fail-open direction: `last_above_hold_reclaim` and `through_cap_idea_dead` only fire when `last` is known, so a blind read would let the entry through. |
+| `orders_unproven` (outbox ticket) | The ticket is refused before the duplicate / one-sell / max-opens checks, which a blind book would all pass. |
+| `cancel_lane_orders_unproven` | Informational. An unproven orders leg yields an empty list, so the cancel lane plans nothing and no DELETE is emitted. Logged so "did nothing" and "could not see" are never confused. |
+| `book_not_schwab_read` / `book_missing` | The execute boundary refused: only a proven Schwab read may drive a live POST or DELETE. A hint book can never reach the wire. |
+| `protect_stop_at_or_above_last_would_market_sell` | The configured stop is at or above the last trade. That is not protection, it is a market SELL on the next open. |
+| `ticket_limit_above_cap` / `through_cap_idea_dead` (outbox) | Guard 11 above. |
+| `cancel_symbol_not_in_live_universe` (at execute) | Boundary copy of the planner's universe restriction. |
+
+**Precedence, when more than one applies:** the execute boundary checks
+eligibility *first*, so a cancel on a hint book reports `book_not_schwab_read`
+even for a symbol the universe check would also reject. Read it as "the book
+was never trustworthy", not as "the symbol was fine".
+
+**Expect more refusals than before, and expect them to cluster during a Schwab
+hiccup.** A quiet cycle that says `protect_blocked_orders_unproven` is the guard
+working, not an outage. The wire also logs an `op: "book_partial"` line naming
+the HTTP status of each failed leg.
+
+> **The hint book answers no gate it cannot answer honestly.** When the broker
+> read fails entirely, `resolve_book` falls back to a book built from
+> `standing_rules.json`. It used to hardcode `in_rth: true` and take `armed`
+> from `armed_hint`, which meant a config file was answering two gates that
+> belong to the wall clock and to the session arm file. Both keys are now
+> absent: the clock and `session_armed()` answer them. A hint book is also never
+> eligible for a live POST or DELETE.
 
 ### What happens to a ticket
 
@@ -159,6 +206,14 @@ same gates a planned entry is:
 > a standing order nobody re-approved — but it means **a ticket dropped in
 > overnight will be dead by morning.** Move it back out of `failed/` and re-approve
 > it when you are at the glass.
+>
+> **OPEN QUESTION, for Anthony, not for a seat to decide.** The read-coverage
+> refusals below make this cost bigger: a Schwab hiccup now quarantines tickets
+> that were never wrong, only unproven. A third outcome — `deferred/`, left in
+> the outbox for refusals that are purely about timing or coverage — would fix
+> it. It is deliberately **not built here**: it is a new state machine on a live
+> wire, and "retry it later automatically" is exactly the property the terminal
+> rule was chosen to avoid. Decide the policy first.
 
 Example ticket (live-universe symbol, inside the caps):
 

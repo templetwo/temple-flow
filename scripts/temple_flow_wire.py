@@ -259,6 +259,40 @@ def order_is_buy_entry(order: dict) -> bool:
     return True
 
 
+def book_leg_proven(book: dict, leg: str) -> bool:
+    """True only when the named broker read leg is PROVEN complete.
+
+    fetch_book issues three independent HTTP calls (accounts, orders, quotes).
+    The accounts call failing aborts the whole read, but a failed orders or
+    quotes call used to leave an EMPTY collection behind with no signal, and
+    every guard in this file is book-derived: an orders call that 500s handed
+    the gates an empty book and they all passed. An empty list is indis-
+    tinguishable from "nothing is working" unless coverage is stated.
+
+    Absence of the flag is NOT permission. A hint book, a hand-built book, or
+    any future book source that does not state its coverage is unproven by
+    construction, so this fails closed on anything it has not been told about.
+    """
+    return book.get(leg + "_ok") is True
+
+
+def book_is_live_eligible(book: Any) -> tuple[bool, str]:
+    """Only a PROVEN Schwab read may drive a live POST or DELETE.
+
+    resolve_book substitutes fallback_book whenever fetch_book returns None —
+    reachable on a transient accounts-endpoint 500 with perfectly valid tokens
+    and a working POST path. That hint book is assembled from the config file,
+    so letting it reach the wire lets standing_rules.json answer questions only
+    the broker can answer. `source` is the established discriminator here
+    (plan_actions already keys its already_working branch on it).
+    """
+    if not isinstance(book, dict) or not book:
+        return False, "book_missing"
+    if book.get("source") != "schwab_read":
+        return False, "book_not_schwab_read"
+    return True, ""
+
+
 def last_price(book: dict, symbol: str) -> float | None:
     q = (book.get("quotes") or {}).get(symbol) or (book.get("quotes") or {}).get(
         symbol.upper()
@@ -416,12 +450,55 @@ def plan_actions(rules: dict, book: dict) -> list[dict]:
         rth = in_rth()
 
     # --- leftovers: protect only ---
+    # DELIBERATE OMISSION, do not "fix" it: this lane checks universe and
+    # duplicates but NOT armed, NOT rth and NOT the risk clip. A protect stop on
+    # a share already held reduces risk, so it is allowed to run on a disarmed,
+    # after-hours cycle. That is only safe while the DUPLICATE check can see the
+    # real order book, which is why the orders-coverage gate below is not
+    # optional: with a blind book this lane posts a second SELL, the exact
+    # rejection Schwab returned on 2026-08-30.
     for sym in PROTECT_ONLY:
         spec = protect.get(sym) or protect.get(sym.lower()) or {}
         stop = _f(spec.get("stop"))
         qty = position_qty(book, sym)
         if qty <= 0:
             continue
+        if not book_leg_proven(book, "orders"):
+            actions.append(
+                _action(
+                    "skip",
+                    sym,
+                    "protect_blocked_orders_unproven",
+                    {"stop": stop, "source": book.get("source")},
+                )
+            )
+            continue
+        # A stop at or above the last trade is not protection, it is a market
+        # SELL on the next open. Only checkable when quotes are proven; when
+        # they are not we still place, because the duplicate check above is the
+        # one that makes this lane safe and it is satisfied.
+        last_seen = last_price(book, sym)
+        if (
+            book_leg_proven(book, "quotes")
+            and stop is not None
+            and last_seen is not None
+            and stop >= last_seen
+        ):
+            actions.append(
+                _action(
+                    "skip",
+                    sym,
+                    "protect_stop_at_or_above_last_would_market_sell",
+                    {"stop": stop, "last": last_seen},
+                )
+            )
+            continue
+        # NOTE: the second clause is now UNREACHABLE BY CONSTRUCTION. Every
+        # fallback_hint book states orders_ok False, so the coverage gate above
+        # returns first. It is kept as harmless defense, but say so here: the
+        # `already_working` key is live in standing_rules.json (NOK, commented
+        # "Do not duplicate"), and a reader who greps for it must not conclude
+        # the config still governs a branch that can no longer execute.
         if existing_protect(book, sym) or (
             spec.get("already_working") and book.get("source") == "fallback_hint"
         ):
@@ -475,6 +552,19 @@ def plan_actions(rules: dict, book: dict) -> list[dict]:
             pass
 
     # --- through-cap / no-DAY hygiene on working entries ---
+    # No coverage gate needed here: an unproven orders leg yields an empty list,
+    # this loop plans nothing, and no DELETE is emitted. Safe by omission — but
+    # say so, because "the cancel lane did nothing" and "the cancel lane could
+    # not see" are different facts and the log must not conflate them.
+    if not book_leg_proven(book, "orders"):
+        actions.append(
+            _action(
+                "skip",
+                None,
+                "cancel_lane_orders_unproven",
+                {"source": book.get("source")},
+            )
+        )
     for o in book.get("orders") or []:
         if not order_is_working(o) or not order_is_buy_entry(o):
             continue
@@ -579,6 +669,17 @@ def plan_actions(rules: dict, book: dict) -> list[dict]:
         new_risk_blocked.append("arm_required")
     if not rth:
         new_risk_blocked.append("outside_rth")
+    # Coverage is a precondition for NEW risk, in both directions:
+    #   orders  — existing_entry / existing_sell / max_opens all mean "found
+    #             something, do not act", so a blind book makes them all pass.
+    #   quotes  — last_above_hold_reclaim and through_cap_idea_dead only fire
+    #             when last is not None. Blind quotes make both SKIP, and the
+    #             entry proceeds. That is the fail-open direction, so it must
+    #             block rather than merely log.
+    if not book_leg_proven(book, "orders"):
+        new_risk_blocked.append("orders_unproven")
+    if not book_leg_proven(book, "quotes"):
+        new_risk_blocked.append("quotes_unproven")
 
     for sym in universe:
         if sym not in LIVE_UNIVERSE:
@@ -870,7 +971,26 @@ def place_gtc_bracket(
 
 
 def fallback_book(rules: dict) -> dict:
-    """Hint book for the box (no spiral-broker). Not a live Schwab snapshot."""
+    """Hint book for the box (no spiral-broker). Not a live Schwab snapshot.
+
+    THIS BOOK ANSWERS NO GATE IT CANNOT ANSWER HONESTLY.
+
+    It used to hardcode `in_rth: True` and take `armed` from `armed_hint` in
+    standing_rules.json. plan_actions reads both from the book, so a config
+    file was answering two gates that belong to the wall clock and to
+    session_armed(). On the Studio that was live: armed_hint is true while
+    config/mv_session.json expired 2026-08-31, so a hint book substituted on a
+    transient accounts-endpoint failure yielded armed=True, in_rth=True and an
+    empty order list — enough to plan a live IBIT BUY outside RTH on an expired
+    arm, duplicating a working order whose own rules comment reads
+    "Do not duplicate."
+
+    Both keys are therefore ABSENT, not False: every reader (plan_actions :414,
+    run_cycle, gate_outbox_ticket) already falls back to the real in_rth() when
+    the key is missing, and resolve_book stamps the real session_armed(). The
+    coverage flags are stated False rather than omitted so the semantics are
+    declared at the point of construction, not inferred by a reader.
+    """
     protect = rules.get("protect") or {}
     positions = []
     for sym in PROTECT_ONLY:
@@ -882,17 +1002,26 @@ def fallback_book(rules: dict) -> dict:
         "sod_equity": _f(rules.get("equity_hint")),
         "day_pnl": 0.0,
         "cash": None,
-        "armed": bool(rules.get("armed_hint", False)),
         "positions": positions,
         "orders": [],
         "quotes": {},
+        "orders_ok": False,
+        "quotes_ok": False,
         "source": "fallback_hint",
-        "in_rth": True,
     }
 
 
 def fetch_book() -> tuple[dict | None, str]:
-    """Read-only Schwab book. Never prints tokens, account hash, or secrets."""
+    """Read-only Schwab book. Never prints tokens, account hash, or secrets.
+
+    UNTESTED SURFACE, named so the next reader does not mistake the green suite
+    for coverage: the Schwab-JSON-to-internal mapping below (positions, orders,
+    quotes) is exercised by NO test — every test hands the planner a hand-built
+    book. The emitted field names are the contract the rest of this file reads
+    ("price", "qty", "stopPrice", "duration", "status", "legs"); the downstream
+    helpers agree with them today. A partial read used to be invisible here,
+    which is one instance of this surface failing quietly.
+    """
     if not broker_available():
         return None, "broker not on this machine"
     try:
@@ -969,7 +1098,11 @@ def fetch_book() -> tuple[dict | None, str]:
             "/trader/v1/accounts/" + acct + "/orders",
             {"fromEnteredTime": frm, "toEnteredTime": to, "maxResults": 50},
         )
-        if ro.status_code == 200:
+        # Coverage, not emptiness. A non-200 here leaves orders == [], which is
+        # indistinguishable from "nothing is working" to every book-derived
+        # guard downstream. State the leg's status on the book instead.
+        orders_ok = ro.status_code == 200
+        if orders_ok:
             data = ro.json()
             data = data if isinstance(data, list) else (data.get("orders") or [])
             for o in data:
@@ -1006,7 +1139,8 @@ def fetch_book() -> tuple[dict | None, str]:
 
         quotes: dict = {}
         rq = get("/marketdata/v1/quotes", {"symbols": "ETHA,IBIT,NVO,NOK"})
-        if rq.status_code == 200:
+        quotes_ok = rq.status_code == 200
+        if quotes_ok:
             q = rq.json()
             for sym, rec in (q.items() if isinstance(q, dict) else []):
                 if not isinstance(rec, dict):
@@ -1036,9 +1170,24 @@ def fetch_book() -> tuple[dict | None, str]:
             "positions": positions,
             "orders": orders,
             "quotes": quotes,
+            "orders_ok": orders_ok,
+            "quotes_ok": quotes_ok,
             "source": "schwab_read",
             "token_safe": safe,
         }
+        if not (orders_ok and quotes_ok):
+            logj(
+                {
+                    "op": "book_partial",
+                    "orders_ok": orders_ok,
+                    "orders_http": ro.status_code,
+                    "quotes_ok": quotes_ok,
+                    "quotes_http": rq.status_code,
+                    "note": "book-derived gates refuse on the unproven leg",
+                    "sent": False,
+                    "mutated": False,
+                }
+            )
         return book, "schwab_read"
     except Exception as e:
         return None, f"broker_error:{type(e).__name__}"
@@ -1114,11 +1263,17 @@ def execute_action(
     rth: bool | None = None,
     repo_root: Path | None = None,
     now: datetime | None = None,
+    book: dict | None = None,
 ) -> dict:
     """Apply one planned action. Dry-run never marks sent.
 
     `sent` = an order was PLACED. `mutated` = broker state changed (place OR
     cancel). A cancel reports execute='canceled' + mutated=True, never sent.
+
+    `book` is REQUIRED for live=True. It is the execute-boundary copy of the
+    planner's checks: defense in depth, so this function cannot be handed an
+    action derived from a hint book (or, later, from a caller that is not
+    run_cycle) and fire it at the broker anyway.
     """
     out = deepcopy(action)
     out["dry_run"] = not live
@@ -1131,6 +1286,26 @@ def execute_action(
     op = action.get("op")
     params = dict(action.get("params") or {})
     params["symbol"] = action.get("symbol")
+
+    # Nothing mutates on a book that is not a proven Schwab read.
+    if op in ("place_gtc_bracket", "place_protect_stop", "cancel_abandon"):
+        eligible, why = book_is_live_eligible(book)
+        if not eligible:
+            out["execute"] = "refused"
+            out["reason"] = why
+            return out
+
+    # Universe restriction, mirrored from the planner. plan_actions already
+    # refuses a cancel outside ETHA/IBIT, but the same was true of
+    # execute_outbox_ticket before the PR shipped it to a live daemon: a check
+    # that lives in exactly one caller is one refactor from being gone.
+    sym_now = str(action.get("symbol") or "").upper()
+    if op == "cancel_abandon" and (
+        sym_now not in LIVE_UNIVERSE or sym_now in PROTECT_ONLY
+    ):
+        out["execute"] = "refused"
+        out["reason"] = "cancel_symbol_not_in_live_universe"
+        return out
     if op == "place_gtc_bracket":
         res = place_gtc_bracket(**params)
         out["schwab"] = {k: res.get(k) for k in ("http", "order_id", "error")}
@@ -1165,6 +1340,7 @@ def execute_action(
         if res.get("http") in (200, 204):
             out["mutated"] = True
             out["execute"] = "canceled"
+            record_in_cycle_cancel(book, order_id)
         elif res.get("http") == 400:
             record_cancel_refusal(order_id, repo_root, now)
             out["execute"] = "cancel_refused_400_after_hours"
@@ -1253,7 +1429,21 @@ def run_cycle(
     planned = plan_actions(rules, book)
     executed = []
     for a in planned:
-        e = execute_action(a, live=live, rth=rth, repo_root=repo_root)
+        # Same quarantine the outbox lane got: neither schwab_post_order nor
+        # cancel_by_id wraps requests, so a network exception out of one action
+        # used to escape run_cycle and abandon every action behind it. Ordering
+        # limits the damage (protect stops go first) but does not close it.
+        try:
+            e = execute_action(
+                a, live=live, rth=rth, repo_root=repo_root, book=book
+            )
+        except Exception as exc:
+            e = dict(a)
+            e["execute"] = "exception"
+            e["error"] = type(exc).__name__
+            e["sent"] = False
+            e["mutated"] = False
+            e["dry_run"] = not live
         logj(e)
         executed.append(e)
     if not planned:
@@ -1304,6 +1494,11 @@ def resolve_book(rules: dict) -> tuple[dict, str]:
     if book is None:
         fb = fallback_book(rules)
         fb["broker_note"] = note
+        # armed is answered HERE, by the session file, not by armed_hint in
+        # standing_rules.json. This is the I/O layer; plan_actions is a pure
+        # planner and must not reach the filesystem to answer it. in_rth is
+        # deliberately left unstamped so each reader consults the wall clock.
+        fb["armed"] = session_armed()
         return fb, note
     return book, note
 
@@ -1498,6 +1693,14 @@ def gate_outbox_ticket(
         rth = in_rth(now)
     detail["in_rth"] = bool(rth)
 
+    # Every gate below this line is answered by the order book. An unproven
+    # orders leg makes all of them pass, so it refuses first. MEASURED: with
+    # orders=[], a ticket for 11 ETHA @ 18.70 clears every gate and POSTs a
+    # duplicate of an order already working.
+    if not book_leg_proven(book, "orders"):
+        detail["source"] = book.get("source")
+        return "orders_unproven", detail
+
     if action == "cancel_by_id":
         order_id = t.get("order_id")
         detail["order_id"] = str(order_id)
@@ -1529,6 +1732,24 @@ def gate_outbox_ticket(
         return "arm_required", detail
     if not rth:
         return "outside_rth", detail
+
+    # The 2026-08-28 no-chase law, which the outbox lane did not carry.
+    # AWAY_MODE.md: "The outbox is not a side door around the standing rules."
+    # The rules file states the cap as an IDEA-level threshold ("No chase
+    # through 18.90", "through cap = idea dead"), not as a guardrail on the
+    # daemon's own repricing, so a human-approved ticket is inside its scope.
+    # limit-vs-cap needs no quotes and is always checkable; last-vs-cap needs a
+    # proven quotes leg.
+    entry_spec = (rules.get("entries") or {}).get(sym) or {}
+    entry_cap = _f(entry_spec.get("cap"))
+    detail["cap"] = entry_cap
+    if entry_cap is not None and limit > entry_cap:
+        return "ticket_limit_above_cap", detail
+    if book_leg_proven(book, "quotes"):
+        last_now = last_price(book, sym)
+        detail["last"] = last_now
+        if entry_cap is not None and last_now is not None and last_now > entry_cap:
+            return "through_cap_idea_dead", detail
 
     # the same risk box a planned entry passes through
     box = risk_box(rules, book)
@@ -1624,6 +1845,29 @@ def record_in_cycle_order(book: dict, detail: dict, order_id: Any) -> None:
     )
 
 
+def record_in_cycle_cancel(book: dict | None, order_id: Any) -> None:
+    """Mark a just-canceled order CANCELED in the in-memory book.
+
+    The symmetric twin of record_in_cycle_order, and of the same bug: the cycle
+    holds ONE book snapshot, so an order the outbox just canceled still reads as
+    WORKING to plan_actions, which runs afterward on that same book and can plan
+    a second cancel_abandon on the same id. MEASURED before this fix: an ETHA
+    DAY BUY id 555 plus an approved cancel_by_id ticket for 555 fired TWO
+    DELETEs on 555 in a single cycle. Live, the second 400s and
+    record_cancel_refusal then poisons that id for the rest of the trading day.
+
+    order_is_working() reads status, so flipping status is enough to make every
+    downstream guard see the cancel.
+    """
+    if not isinstance(book, dict):
+        return
+    target = str(order_id)
+    for o in book.get("orders") or []:
+        if str(o.get("id") or o.get("orderId")) == target:
+            o["status"] = "CANCELED"
+            o["in_cycle_canceled"] = True
+
+
 def stamp_ticket_order_id(path: Path, ticket: dict, order_id: Any) -> bool:
     """Write the broker order_id back into the ticket file, atomically.
 
@@ -1711,6 +1955,14 @@ def execute_outbox_ticket(
         out["reason"] = "gates_passed_would_post"
         return out
 
+    # A hint book must never reach the wire. gate_outbox_ticket already refuses
+    # an unproven orders leg; this is the boundary copy of the same rule.
+    eligible, why = book_is_live_eligible(book)
+    if not eligible:
+        out["execute"] = "refused"
+        out["reason"] = why
+        return out
+
     action = detail["action"]
     if action == "place_gtc_bracket":
         res = place_gtc_bracket(
@@ -1751,6 +2003,9 @@ def execute_outbox_ticket(
     if res.get("http") in (200, 204):
         out["mutated"] = True
         out["execute"] = "canceled"
+        # plan_actions runs after this on the SAME book snapshot; without this
+        # it re-plans a cancel_abandon on the id we just canceled.
+        record_in_cycle_cancel(book, order_id)
     elif res.get("http") == 400:
         record_cancel_refusal(order_id, repo_root, now)
         out["execute"] = "cancel_refused_400_after_hours"
