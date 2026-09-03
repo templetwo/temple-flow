@@ -24,6 +24,9 @@ node_modules/
 config/LIVE_OK
 config/standing_rules.json
 config/mv_session.json
+config/outbox/*.json
+config/outbox/done/
+config/outbox/failed/
 logs/schwab_account_snapshot.json
 logs/schwab_oauth_reauth.log
 tf-actloop.patch

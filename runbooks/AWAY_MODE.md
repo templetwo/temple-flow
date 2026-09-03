@@ -13,44 +13,67 @@ Grok Desktop is **off the send path**.
 - **Cash idle > stale replace.** Sitting in cash until a real GTC+stop can be posted at the Studio beats another stale DAY and another card.
 - **Think loop is read-only from the phone.** Watch, write `config/standing_rules.json` numbers, ping on breaker / fill / naked-protect gap. Do not send.
 
-## `--live` is not authorized until
+## `--live` authorization
 
 1. Anthony is **at the Studio**, and
-2. the bracket helper is **real** (`docs/BRACKET_HELPER.md` — today it is a refuse stub).
+2. the bracket helper is **real** (`docs/BRACKET_HELPER.md` — ✅ wired as of 2026-08-30).
 
-`--live` also needs `config/LIVE_OK` **and** `TEMPLE_FLOW_LIVE=1`. The launchd plist must never pass `--live`.
+`--live` also needs `config/LIVE_OK` **and** `TEMPLE_FLOW_LIVE=1`. **The launchd plist may pass `--live`**; the human gate is `config/LIVE_OK` on disk. Default without `LIVE_OK` remains dry-run.
 
 Do not run `--live` from Grok Desktop. Do not run `--live` from the phone. Do not copy Mac tokens off the Studio.
 
-## Tonight, once (home, Studio Terminal)
+## Setup: one Studio Terminal command
 
-1. Copy `config/standing_rules.example.json` → `config/standing_rules.json`.
-2. Confirm the NVO stop (example is 42.50 GTC). Edit the JSON if the number is wrong.
-3. Dry-run:
-   ```bash
-   cd ~/temple-flow
-   ~/spiral-broker-prod/dashboard/api/venv_new/bin/python3 scripts/temple_flow_wire.py --status
-   ~/spiral-broker-prod/dashboard/api/venv_new/bin/python3 scripts/temple_flow_wire.py --once
-   ```
-4. One home Terminal `--once --live` **or skip**. Skip unless the bracket helper is implemented and you are at the glass. Prefer skip over Grok Desktop.
-   ```bash
-   # only if helper is real AND you are at the Studio
-   touch config/LIVE_OK
-   TEMPLE_FLOW_LIVE=1 ~/spiral-broker-prod/dashboard/api/venv_new/bin/python3 \
-     scripts/temple_flow_wire.py --once --live
-   ```
-5. Load launchd (dry-run `--once`, no `--live`):
-   ```bash
-   mkdir -p ~/Library/Logs
-   cp deploy/com.templetwo.temple-flow-wire.plist ~/Library/LaunchAgents/
-   launchctl load ~/Library/LaunchAgents/com.templetwo.temple-flow-wire.plist
-   # logs: ~/Library/Logs/temple-flow-wire.log
-   ```
-6. `arm MV session` if entries are wanted tomorrow. Then leave.
+Use the installer script:
 
-## What the daemon will do while you are away (dry-run today)
+```bash
+cd ~/temple-flow
+./scripts/install_act_loop.sh
+```
+
+This will:
+1. Copy/bootstrap the plist into `~/Library/LaunchAgents`
+2. `launchctl unload/load` the daemon
+3. Create outbox directories
+4. Print the log path
+
+To enable live trading (only at Studio, only when ready):
+
+```bash
+cd ~/temple-flow
+./scripts/install_act_loop.sh --live-ok
+```
+
+This creates `config/LIVE_OK` (refuses if standing rules have enabled entries).
+
+## Ticket outbox
+
+One-off approved tickets go in `config/outbox/*.json`:
+- Must have `"status": "approved"` and `"risk_stamped": true`
+- Must include explicit human-approved qty/limit/stop
+- After send or reject, moved to `done/` or `failed/` folder
+- Never re-sends if `schwab_order_id` is already WORKING
+
+Example ticket:
+```json
+{
+  "id": "TF-20260831-01",
+  "status": "approved",
+  "risk_stamped": true,
+  "action": "place_gtc_bracket",
+  "symbol": "SOFI",
+  "qty": 10,
+  "limit": 8.50,
+  "stop": 8.20,
+  "side": "BUY",
+  "stop_side": "SELL"
+}
+```
+
+## What the daemon will do while you are away
 
 - Plan GTC ETHA pullback + attached stop when armed, under cap, inside 2.5% / 4 opens / breakers.
 - Plan NVO/NOK protect stops. Never add to leftovers.
 - Plan cancel/abandon if last or working limit is through the cap. Never reprice up.
-- Print JSON lines. `sent` stays false until the helper exists and a human `--live` at the Studio actually posts.
+- Process outbox tickets (if LIVE_OK set).
+- Print JSON lines. `sent` stays false in dry-run; true when LIVE_OK exists and order POSTs succeed.

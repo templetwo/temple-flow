@@ -29,13 +29,13 @@
   },
   "entries": {
     "ETHA": {
-      "enabled": true,
+      "enabled": false,
       "qty": 5,
       "limit": 18.7,
       "stop": 17.7,
       "cap": 18.9,
       "duration": "GTC",
-      "_comment": "5 ETHA @ 18.70 GTC / stop 17.70. Qty clipped so (limit-stop)*qty <= 2.5% of live equity (~$14.92 on $597). No DAY. No chase through 18.90."
+      "_comment": "5 ETHA @ 18.70 GTC / stop 17.70. Qty clipped so (limit-stop)*qty <= 2.5% of live equity (~$14.92 on $597). No DAY. No chase through 18.90. DISABLED by default - new risk goes through outbox."
     },
     "IBIT": {
       "enabled": false,

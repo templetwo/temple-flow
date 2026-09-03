@@ -154,6 +154,7 @@ class TestQtyClip(unittest.TestCase):
 
     def test_plan_clips_requested_qty(self):
         rules = example_rules()
+        rules["entries"]["ETHA"]["enabled"] = True  # Enable for this test
         rules["entries"]["ETHA"]["qty"] = 20
         book = base_book(quotes={"ETHA": {"last": 18.50}})
         actions = plan_actions(rules, book)
@@ -232,8 +233,150 @@ class TestExampleFile(unittest.TestCase):
         self.assertEqual(rules["entries"]["ETHA"]["limit"], 18.7)
         self.assertEqual(rules["entries"]["ETHA"]["stop"], 17.7)
         self.assertEqual(rules["entries"]["ETHA"]["cap"], 18.9)
+        # ETHA should be disabled by default - new risk goes through outbox
+        self.assertFalse(rules["entries"]["ETHA"]["enabled"])
         self.assertIsNone(rules["entries"]["IBIT"]["hold_reclaim"])
         self.assertFalse(rules["entries"]["IBIT"]["enabled"])
+
+
+class TestCancelById(unittest.TestCase):
+    def test_execute_cancel_abandon_live(self):
+        from temple_flow_wire import cancel_by_id
+
+        # Mock cancel_by_id
+        captured = {}
+        def mock_cancel(order_id):
+            captured["order_id"] = order_id
+            return {"http": 200, "error": ""}
+
+        import temple_flow_wire
+        original = temple_flow_wire.cancel_by_id
+        temple_flow_wire.cancel_by_id = mock_cancel
+        try:
+            action = {
+                "op": "cancel_abandon",
+                "symbol": "ETHA",
+                "reason": "through_cap_idea_dead",
+                "params": {"order_id": "1007750322357"},
+            }
+            result = execute_action(action, live=True)
+            self.assertEqual(captured["order_id"], "1007750322357")
+            self.assertTrue(result["sent"])
+            self.assertEqual(result["execute"], "canceled")
+        finally:
+            temple_flow_wire.cancel_by_id = original
+
+    def test_execute_cancel_400_after_hours(self):
+        import temple_flow_wire
+        original = temple_flow_wire.cancel_by_id
+        temple_flow_wire.cancel_by_id = lambda oid: {"http": 400, "error": "PENDING_ACTIVATION after hours"}
+        try:
+            action = {
+                "op": "cancel_abandon",
+                "symbol": "ETHA",
+                "params": {"order_id": "1007750322357"},
+            }
+            result = execute_action(action, live=True)
+            self.assertFalse(result["sent"])
+            self.assertEqual(result["execute"], "cancel_refused_400_after_hours")
+        finally:
+            temple_flow_wire.cancel_by_id = original
+
+
+class TestOneSellLaw(unittest.TestCase):
+    def test_refuse_protect_if_sell_exists(self):
+        rules = example_rules()
+        book = base_book(
+            orders=[
+                {
+                    "id": "1007691287449",
+                    "symbol": "NVO",
+                    "side": "SELL",
+                    "status": "WORKING",
+                    "type": "LIMIT",
+                    "price": 45.00,
+                    "duration": "GTC",
+                    "qty": 1,
+                    "remaining": 1,
+                }
+            ]
+        )
+        actions = plan_actions(rules, book)
+        nvo = [a for a in actions if a.get("symbol") == "NVO"]
+        # Should skip because a SELL already exists (one-sell law)
+        self.assertTrue(any(a["reason"] == "one_sell_law_existing_sell" for a in nvo), nvo)
+        self.assertFalse(any(a["op"] == "place_protect_stop" for a in nvo), nvo)
+
+    def test_refuse_protect_if_stop_exists(self):
+        rules = example_rules()
+        book = base_book(
+            orders=[
+                {
+                    "id": "1007691287449",
+                    "symbol": "NVO",
+                    "side": "SELL",
+                    "status": "WORKING",
+                    "type": "STOP",
+                    "stopPrice": 42.5,
+                    "duration": "GTC",
+                    "qty": 1,
+                    "remaining": 1,
+                }
+            ]
+        )
+        actions = plan_actions(rules, book)
+        nvo = [a for a in actions if a.get("symbol") == "NVO"]
+        # Should skip because stop already working (existing logic)
+        self.assertTrue(any(a["reason"] == "protect_already_working" for a in nvo), nvo)
+        self.assertFalse(any(a["op"] == "place_protect_stop" for a in nvo), nvo)
+
+
+class TestOutbox(unittest.TestCase):
+    def test_outbox_dry_run(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_repo = Path(tmpdir)
+            outbox = tmp_repo / "config" / "outbox"
+            outbox.mkdir(parents=True)
+            ticket = {
+                "id": "TF-TEST-01",
+                "status": "approved",
+                "risk_stamped": True,
+                "action": "place_gtc_bracket",
+                "symbol": "ETHA",
+                "qty": 5,
+                "limit": 18.7,
+                "stop": 17.7,
+            }
+            ticket_path = outbox / "TF-TEST-01.json"
+            ticket_path.write_text(json.dumps(ticket))
+            
+            from temple_flow_wire import load_outbox_tickets, execute_outbox_ticket
+            tickets = load_outbox_tickets(tmp_repo)
+            self.assertEqual(len(tickets), 1)
+            self.assertEqual(tickets[0]["ticket"]["id"], "TF-TEST-01")
+            
+            result = execute_outbox_ticket(tickets[0], live=False)
+            self.assertEqual(result["execute"], "dry_run")
+            self.assertFalse(result["sent"])
+
+    def test_outbox_skip_already_sent(self):
+        ticket_data = {
+            "ticket": {
+                "id": "TF-TEST-02",
+                "status": "approved",
+                "risk_stamped": True,
+                "action": "place_gtc_bracket",
+                "symbol": "ETHA",
+                "qty": 5,
+                "limit": 18.7,
+                "stop": 17.7,
+                "schwab_order_id": "1007762031724",
+            }
+        }
+        from temple_flow_wire import execute_outbox_ticket
+        result = execute_outbox_ticket(ticket_data, live=True)
+        self.assertEqual(result["execute"], "skip_already_sent")
+        self.assertFalse(result["sent"])
 
 
 if __name__ == "__main__":
