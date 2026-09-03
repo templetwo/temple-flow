@@ -1,0 +1,3 @@
+# Outbox for approved Temple Flow tickets
+# Place approved ticket JSON files here for daemon processing
+# Format: {"id": "TF-YYYYMMDD-NN", "status": "approved", "risk_stamped": true, ...}

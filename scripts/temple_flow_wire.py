@@ -272,6 +272,18 @@ def existing_protect(book: dict, symbol: str) -> dict | None:
     return None
 
 
+def existing_sell(book: dict, symbol: str) -> dict | None:
+    """Find any working SELL order (stop or limit). One-sell law."""
+    for o in book.get("orders") or []:
+        if order_symbol(o) != symbol:
+            continue
+        if not order_is_working(o):
+            continue
+        if order_side(o) == "SELL":
+            return o
+    return None
+
+
 def existing_entry(book: dict, symbol: str) -> dict | None:
     for o in book.get("orders") or []:
         if order_symbol(o) != symbol:
@@ -407,6 +419,22 @@ def plan_actions(rules: dict, book: dict) -> list[dict]:
                     sym,
                     "protect_already_working",
                     {"stop": stop, "already_working": True},
+                )
+            )
+            continue
+        # one-sell law: refuse if any SELL is already working
+        existing = existing_sell(book, sym)
+        if existing:
+            actions.append(
+                _action(
+                    "skip",
+                    sym,
+                    "one_sell_law_existing_sell",
+                    {
+                        "stop": stop,
+                        "existing_order_id": existing.get("id") or existing.get("orderId"),
+                        "existing_type": existing.get("type") or existing.get("orderType"),
+                    },
                 )
             )
             continue
@@ -702,6 +730,32 @@ def schwab_post_order(payload: dict) -> dict:
     return {"http": r.status_code, "order_id": _order_id_from_location(loc), "error": "" if r.status_code in (200, 201) else (r.text or "")[:180]}
 
 
+def cancel_by_id(order_id: str | int) -> dict:
+    """DELETE /trader/v1/accounts/{hash}/orders/{id}. Never prints tokens."""
+    if not broker_available():
+        return {"http": 0, "error": "broker not on this machine"}
+    sys.path.insert(0, str(BROKER_ROOT))
+    os.chdir(BROKER_ROOT)
+    try:
+        from dotenv import load_dotenv  # type: ignore
+        load_dotenv(BROKER_ROOT / ".env")
+    except Exception:
+        pass
+    acct = os.environ.get("SCHWAB_ACCOUNT_HASH", "").strip()
+    if not acct:
+        return {"http": 0, "error": "missing_account_hash"}
+    from src.token_manager import TokenManager  # type: ignore
+    import requests  # type: ignore
+
+    token = TokenManager().get_token()
+    r = requests.delete(
+        f"https://api.schwabapi.com/trader/v1/accounts/{acct}/orders/{order_id}",
+        headers={"Authorization": "Bearer " + token},
+        timeout=30,
+    )
+    return {"http": r.status_code, "error": "" if r.status_code in (200, 204) else (r.text or "")[:180]}
+
+
 def place_protect_stop(symbol: str, qty: int, stop: float, **_kwargs: Any) -> dict:
     payload = {
         "orderType": "STOP",
@@ -966,8 +1020,23 @@ def execute_action(action: dict, live: bool) -> dict:
         out["execute"] = "posted" if out["sent"] else "post_failed"
         return out
     if op == "cancel_abandon":
-        out["execute"] = "refused_cancel_not_wired"
-        out["sent"] = False
+        order_id = params.get("order_id")
+        if not order_id:
+            out["execute"] = "cancel_failed_no_order_id"
+            out["sent"] = False
+            return out
+        res = cancel_by_id(order_id)
+        out["schwab"] = {k: res.get(k) for k in ("http", "error")}
+        # HTTP 200/204 = success; 400 after hours on PENDING_ACTIVATION = leave it
+        if res.get("http") in (200, 204):
+            out["sent"] = True
+            out["execute"] = "canceled"
+        elif res.get("http") == 400:
+            out["sent"] = False
+            out["execute"] = "cancel_refused_400_after_hours"
+        else:
+            out["sent"] = False
+            out["execute"] = "cancel_failed"
         return out
     out["execute"] = "no_mutation"
     return out
@@ -992,6 +1061,18 @@ def run_cycle(
         "dry_run": not live,
     }
     logj(header)
+    
+    # Process outbox tickets first
+    outbox_tickets = load_outbox_tickets()
+    for ticket_data in outbox_tickets:
+        e = execute_outbox_ticket(ticket_data, live=live)
+        logj(e)
+        # Move ticket based on result
+        if e.get("sent"):
+            move_ticket(ticket_data["path"], "done")
+        elif e.get("execute") in ("post_failed", "cancel_failed", "unknown_action"):
+            move_ticket(ticket_data["path"], "failed")
+    
     planned = plan_actions(rules, book)
     executed = []
     for a in planned:
@@ -1048,6 +1129,91 @@ def resolve_book(rules: dict) -> tuple[dict, str]:
         fb["broker_note"] = note
         return fb, note
     return book, note
+
+
+def load_outbox_tickets(repo_root: Path | None = None) -> list[dict]:
+    """Scan config/outbox/*.json for approved tickets. Never re-send WORKING."""
+    root = repo_root or REPO_ROOT
+    outbox = root / "config" / "outbox"
+    if not outbox.exists():
+        return []
+    tickets = []
+    for p in sorted(outbox.glob("*.json")):
+        try:
+            t = json.loads(p.read_text())
+            if t.get("status") == "approved" and t.get("risk_stamped"):
+                tickets.append({"ticket": t, "path": p})
+        except Exception:
+            pass
+    return tickets
+
+
+def move_ticket(src: Path, result: str, repo_root: Path | None = None) -> None:
+    """Move ticket to done/ or failed/ subfolder."""
+    root = repo_root or REPO_ROOT
+    dest_folder = root / "config" / "outbox" / result
+    dest_folder.mkdir(parents=True, exist_ok=True)
+    try:
+        src.rename(dest_folder / src.name)
+    except Exception:
+        pass
+
+
+def execute_outbox_ticket(ticket_data: dict, live: bool) -> dict:
+    """Execute one approved ticket. Never re-send if order_id already WORKING."""
+    t = ticket_data.get("ticket") or {}
+    out = {
+        "op": "outbox_ticket",
+        "ticket_id": t.get("id"),
+        "symbol": t.get("symbol"),
+        "dry_run": not live,
+        "sent": False,
+    }
+    if not live:
+        out["execute"] = "dry_run"
+        return out
+    
+    # Check if order_id already exists and is WORKING
+    existing_oid = t.get("schwab_order_id")
+    if existing_oid:
+        out["execute"] = "skip_already_sent"
+        out["existing_order_id"] = existing_oid
+        return out
+    
+    action = t.get("action", "").lower()
+    if action == "place_gtc_bracket":
+        res = place_gtc_bracket(
+            symbol=t.get("symbol"),
+            qty=t.get("qty"),
+            limit=t.get("limit"),
+            stop=t.get("stop"),
+            side=t.get("side", "BUY"),
+            stop_side=t.get("stop_side", "SELL"),
+        )
+        out["schwab"] = {k: res.get(k) for k in ("http", "order_id", "error")}
+        out["sent"] = res.get("http") in (200, 201)
+        out["execute"] = "posted" if out["sent"] else "post_failed"
+        return out
+    elif action == "cancel_by_id":
+        order_id = t.get("order_id")
+        if not order_id:
+            out["execute"] = "cancel_failed_no_order_id"
+            return out
+        res = cancel_by_id(order_id)
+        out["schwab"] = {k: res.get(k) for k in ("http", "error")}
+        if res.get("http") in (200, 204):
+            out["sent"] = True
+            out["execute"] = "canceled"
+        elif res.get("http") == 400:
+            out["sent"] = False
+            out["execute"] = "cancel_refused_400_after_hours"
+        else:
+            out["sent"] = False
+            out["execute"] = "cancel_failed"
+        return out
+    else:
+        out["execute"] = "unknown_action"
+        return out
 
 
 def main(argv: list[str] | None = None) -> int:
