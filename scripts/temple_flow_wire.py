@@ -178,6 +178,21 @@ def _risk(rules: dict) -> dict:
     }
 
 
+def flatten_orders(orders: list[dict]) -> list[dict]:
+    """Recursively flatten orders including childOrderStrategies.
+    
+    A filled TRIGGER parent with a WORKING child STOP must be visible
+    to existing_sell / existing_protect checks (one-sell law).
+    """
+    flat = []
+    for o in orders:
+        flat.append(o)
+        children = o.get("childOrderStrategies") or []
+        if children:
+            flat.extend(flatten_orders(children))
+    return flat
+
+
 def order_symbol(order: dict) -> str | None:
     if order.get("symbol"):
         return str(order["symbol"]).upper()
@@ -916,7 +931,7 @@ def fetch_book() -> tuple[dict | None, str]:
         now = datetime.now(timezone.utc)
         frm = (now - timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
         to = (now + timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-        orders: list[dict] = []
+        raw_orders: list[dict] = []
         ro = get(
             "/trader/v1/accounts/" + acct + "/orders",
             {"fromEnteredTime": frm, "toEnteredTime": to, "maxResults": 50},
@@ -924,37 +939,42 @@ def fetch_book() -> tuple[dict | None, str]:
         if ro.status_code == 200:
             data = ro.json()
             data = data if isinstance(data, list) else (data.get("orders") or [])
-            for o in data:
-                legs = [
-                    {
-                        "instruction": leg.get("instruction"),
-                        "symbol": (leg.get("instrument") or {}).get("symbol"),
-                        "qty": leg.get("quantity"),
-                    }
-                    for leg in (o.get("orderLegCollection") or [])
-                ]
-                orders.append(
-                    {
-                        "id": o.get("orderId"),
-                        "status": o.get("status"),
-                        "type": o.get("orderType"),
-                        "price": o.get("price"),
-                        "stopPrice": o.get("stopPrice"),
-                        "duration": o.get("duration"),
-                        "qty": o.get("quantity"),
-                        "filledQty": o.get("filledQuantity"),
-                        "remaining": o.get("remainingQuantity"),
-                        "legs": legs,
-                        "symbol": (legs[0].get("symbol") if legs else None),
-                        "side": (
-                            "BUY"
-                            if any("BUY" in str(x.get("instruction") or "") for x in legs)
-                            else "SELL"
-                            if any("SELL" in str(x.get("instruction") or "") for x in legs)
-                            else ""
-                        ),
-                    }
-                )
+            raw_orders = data
+        
+        # Flatten orders to include childOrderStrategies (TRIGGER parents + child STOP)
+        flattened = flatten_orders(raw_orders)
+        orders: list[dict] = []
+        for o in flattened:
+            legs = [
+                {
+                    "instruction": leg.get("instruction"),
+                    "symbol": (leg.get("instrument") or {}).get("symbol"),
+                    "qty": leg.get("quantity"),
+                }
+                for leg in (o.get("orderLegCollection") or [])
+            ]
+            orders.append(
+                {
+                    "id": o.get("orderId"),
+                    "status": o.get("status"),
+                    "type": o.get("orderType"),
+                    "price": o.get("price"),
+                    "stopPrice": o.get("stopPrice"),
+                    "duration": o.get("duration"),
+                    "qty": o.get("quantity"),
+                    "filledQty": o.get("filledQuantity"),
+                    "remaining": o.get("remainingQuantity"),
+                    "legs": legs,
+                    "symbol": (legs[0].get("symbol") if legs else None),
+                    "side": (
+                        "BUY"
+                        if any("BUY" in str(x.get("instruction") or "") for x in legs)
+                        else "SELL"
+                        if any("SELL" in str(x.get("instruction") or "") for x in legs)
+                        else ""
+                    ),
+                }
+            )
 
         quotes: dict = {}
         rq = get("/marketdata/v1/quotes", {"symbols": "ETHA,IBIT,NVO,NOK"})

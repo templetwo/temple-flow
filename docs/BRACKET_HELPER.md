@@ -28,6 +28,10 @@ Implication for the helper:
 
 See `docs/AMENDMENTS_2026-08-30.md`.
 
+### Child order visibility (2026-09-03 bugfix)
+
+`fetch_book` now flattens `childOrderStrategies` recursively so a filled TRIGGER parent's WORKING child STOP is visible to `existing_sell` / `existing_protect` / one-sell checks. This prevents duplicate STOP rejections when a bracket order fills and the child STOP is already working.
+
 ## Wire status
 
 - ✅ **place_gtc_bracket**: real, tested live

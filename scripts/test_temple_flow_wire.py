@@ -16,6 +16,7 @@ sys.path.insert(0, str(HERE))
 from temple_flow_wire import (  # noqa: E402
     clip_qty,
     execute_action,
+    flatten_orders,
     live_authorized,
     load_rules,
     place_gtc_bracket,
@@ -377,6 +378,178 @@ class TestOutbox(unittest.TestCase):
         result = execute_outbox_ticket(ticket_data, live=True)
         self.assertEqual(result["execute"], "skip_already_sent")
         self.assertFalse(result["sent"])
+
+
+class TestChildOrderFlattening(unittest.TestCase):
+    """Test that childOrderStrategies are flattened (bugfix TF-20260903-06)."""
+
+    def test_flatten_orders_with_children(self):
+        """Flatten TRIGGER parent + child STOP into separate visible orders."""
+        orders = [
+            {
+                "orderId": "1007762031724",
+                "status": "FILLED",
+                "orderType": "LIMIT",
+                "price": 43.90,
+                "duration": "GOOD_TILL_CANCEL",
+                "quantity": 2,
+                "filledQuantity": 2,
+                "remainingQuantity": 0,
+                "orderLegCollection": [
+                    {"instruction": "BUY", "quantity": 2, "instrument": {"symbol": "IBIT"}}
+                ],
+                "childOrderStrategies": [
+                    {
+                        "orderId": "1007762031725",
+                        "status": "WORKING",
+                        "orderType": "STOP",
+                        "stopPrice": 41.20,
+                        "duration": "GOOD_TILL_CANCEL",
+                        "quantity": 2,
+                        "remainingQuantity": 2,
+                        "orderLegCollection": [
+                            {"instruction": "SELL", "quantity": 2, "instrument": {"symbol": "IBIT"}}
+                        ],
+                    }
+                ],
+            }
+        ]
+        flat = flatten_orders(orders)
+        self.assertEqual(len(flat), 2, "Must flatten parent + child")
+        self.assertEqual(flat[0]["orderId"], "1007762031724")
+        self.assertEqual(flat[1]["orderId"], "1007762031725")
+        self.assertEqual(flat[1]["status"], "WORKING")
+        self.assertEqual(flat[1]["orderType"], "STOP")
+
+    def test_flatten_orders_no_children(self):
+        """Flatten when no children exist (no-op)."""
+        orders = [
+            {
+                "orderId": "1234",
+                "status": "WORKING",
+                "orderType": "LIMIT",
+                "price": 18.70,
+            }
+        ]
+        flat = flatten_orders(orders)
+        self.assertEqual(len(flat), 1)
+        self.assertEqual(flat[0]["orderId"], "1234")
+
+    def test_filled_parent_working_child_blocks_duplicate_protect(self):
+        """Reproduce TF-20260903-06: filled parent + working child STOP → refuse duplicate."""
+        rules = example_rules()
+        # Simulate IBIT enabled + filled
+        rules["entries"]["IBIT"] = {
+            "enabled": True,
+            "qty": 2,
+            "limit": 43.90,
+            "stop": 41.20,
+            "cap": 45.00,
+            "hold_reclaim": None,
+        }
+        # Remove protect entry for IBIT if any
+        if "IBIT" in rules.get("protect", {}):
+            del rules["protect"]["IBIT"]
+
+        # Book: IBIT position from filled parent, child STOP already working
+        book = base_book(
+            positions=[
+                {"symbol": "IBIT", "qty": 2},
+                {"symbol": "NVO", "qty": 1},
+                {"symbol": "NOK", "qty": 1},
+            ],
+            orders=[
+                # Filled parent TRIGGER
+                {
+                    "id": "1007762031724",
+                    "symbol": "IBIT",
+                    "side": "BUY",
+                    "status": "FILLED",
+                    "type": "LIMIT",
+                    "price": 43.90,
+                    "duration": "GOOD_TILL_CANCEL",
+                    "qty": 2,
+                    "filledQty": 2,
+                    "remaining": 0,
+                },
+                # Child STOP (working)
+                {
+                    "id": "1007762031725",
+                    "symbol": "IBIT",
+                    "side": "SELL",
+                    "status": "WORKING",
+                    "type": "STOP",
+                    "stopPrice": 41.20,
+                    "duration": "GOOD_TILL_CANCEL",
+                    "qty": 2,
+                    "remaining": 2,
+                },
+            ],
+            quotes={"IBIT": {"last": 43.50}},
+        )
+
+        actions = plan_actions(rules, book)
+        ibit_protect = [
+            a
+            for a in actions
+            if a.get("symbol") == "IBIT" and a["op"] == "place_protect_stop"
+        ]
+        ibit_skip = [
+            a
+            for a in actions
+            if a.get("symbol") == "IBIT"
+            and a["op"] == "skip"
+            and "one_sell" in a.get("reason", "")
+        ]
+
+        # Must NOT place a second STOP (one-sell law)
+        self.assertEqual(len(ibit_protect), 0, f"Must not place duplicate protect: {actions}")
+        # Should skip with one_sell_law or similar reason
+        # The actual skip reason might vary, but the key is NO duplicate protect
+        # Actually, the existing_entry check will see the position > 0 and skip with "already_long_no_add"
+        # But the protect logic should also see the existing SELL and refuse
+        
+        # Let's check from a different angle: if we try to place protect manually
+        # The plan should refuse because existing_sell sees the child STOP
+        from temple_flow_wire import existing_sell
+        existing = existing_sell(book, "IBIT")
+        self.assertIsNotNone(existing, "existing_sell must find child STOP")
+        self.assertEqual(existing["id"], "1007762031725")
+        self.assertEqual(existing["type"], "STOP")
+
+    def test_existing_protect_finds_child_stop(self):
+        """existing_protect must find a child STOP order."""
+        from temple_flow_wire import existing_protect
+
+        book = base_book(
+            orders=[
+                # Filled parent
+                {
+                    "id": "1007762031724",
+                    "symbol": "IBIT",
+                    "side": "BUY",
+                    "status": "FILLED",
+                    "type": "LIMIT",
+                    "price": 43.90,
+                    "qty": 2,
+                    "remaining": 0,
+                },
+                # Child STOP (working)
+                {
+                    "id": "1007762031725",
+                    "symbol": "IBIT",
+                    "side": "SELL",
+                    "status": "WORKING",
+                    "type": "STOP",
+                    "stopPrice": 41.20,
+                    "qty": 2,
+                    "remaining": 2,
+                },
+            ]
+        )
+        protect = existing_protect(book, "IBIT")
+        self.assertIsNotNone(protect, "Must find child STOP as existing protect")
+        self.assertEqual(protect["id"], "1007762031725")
 
 
 if __name__ == "__main__":
