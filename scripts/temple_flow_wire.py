@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 from copy import deepcopy
@@ -48,6 +49,14 @@ WORKING_STATUSES = {
     "PENDING_CANCEL",
 }
 CLOSED_STATUSES = {"FILLED", "CANCELED", "CANCELLED", "EXPIRED", "REJECTED", "REPLACED"}
+
+# Hard per-ticket notional ceiling for the outbox lane.
+# Fraction of live equity. 0.35 admits one real position on a ~$600 book
+# (5 ETHA @ 18.70 = $93.50; 2 IBIT @ 43.90 = $87.80) while capping a fat-finger.
+# NOT the 2.5% risk_pct: that caps |limit-stop|*qty, this caps qty*limit.
+MAX_TICKET_NOTIONAL_PCT_DEFAULT = 0.35
+# config/cancel_refusals.json — order_ids Schwab refused with HTTP 400 today.
+CANCEL_REFUSAL_STATE = ("config", "cancel_refusals.json")
 
 
 def now_et(now: datetime | None = None) -> datetime:
@@ -372,7 +381,10 @@ def _action(
         "symbol": symbol,
         "reason": reason,
         "params": params or {},
+        # `sent` means "an order was PLACED". A cancel never sets it.
         "sent": False,
+        # `mutated` means "the broker state changed" (a place OR a cancel).
+        "mutated": False,
         "dry_run": True,
     }
 
@@ -468,6 +480,20 @@ def plan_actions(rules: dict, book: dict) -> list[dict]:
             continue
         sym = order_symbol(o)
         if not sym:
+            continue
+        # Cancel lane is universe-restricted. A working BUY on anything outside
+        # ETHA/IBIT is a human's order — the daemon does not touch it. Protect
+        # stops are SELLs and never reach here (order_is_buy_entry), but state
+        # the leftover refusal explicitly rather than lean on that.
+        if sym not in LIVE_UNIVERSE or sym in PROTECT_ONLY:
+            actions.append(
+                _action(
+                    "skip",
+                    sym,
+                    "cancel_lane_not_in_live_universe",
+                    {"order_id": o.get("id") or o.get("orderId")},
+                )
+            )
             continue
         spec = entries.get(sym) or {}
         cap = _f(spec.get("cap"))
@@ -601,6 +627,28 @@ def plan_actions(rules: dict, book: dict) -> list[dict]:
 
         if position_qty(book, sym) > 0:
             actions.append(_action("skip", sym, "already_long_no_add"))
+            continue
+
+        # One-sell law on the BRACKET path too. place_gtc_bracket carries an
+        # attached child STOP SELL; if a SELL is already working on this symbol
+        # Schwab treats it as owning the share and rejects the second one
+        # (proven live 2026-08-30). The PROTECT_ONLY loop checked this; the
+        # entry loop did not.
+        existing_s = existing_sell(book, sym)
+        if existing_s:
+            actions.append(
+                _action(
+                    "skip",
+                    sym,
+                    "one_sell_law_existing_sell",
+                    {
+                        "existing_order_id": existing_s.get("id")
+                        or existing_s.get("orderId"),
+                        "existing_type": existing_s.get("type")
+                        or existing_s.get("orderType"),
+                    },
+                )
+            )
             continue
 
         working = existing_entry(book, sym)
@@ -996,11 +1044,87 @@ def fetch_book() -> tuple[dict | None, str]:
         return None, f"broker_error:{type(e).__name__}"
 
 
-def execute_action(action: dict, live: bool) -> dict:
-    """Apply one planned action. Dry-run never marks sent."""
+def _cancel_refusal_path(repo_root: Path | None = None) -> Path:
+    return (repo_root or REPO_ROOT).joinpath(*CANCEL_REFUSAL_STATE)
+
+
+def load_cancel_refusals(repo_root: Path | None = None) -> dict:
+    """{order_id: 'YYYY-MM-DD'} — the ET day Schwab last refused that cancel."""
+    p = _cancel_refusal_path(repo_root)
+    if not p.exists():
+        return {}
+    try:
+        d = json.loads(p.read_text())
+    except Exception as e:
+        logj(
+            {
+                "op": "cancel_refusal_state",
+                "execute": "unreadable",
+                "error": type(e).__name__,
+                "path": str(p),
+                "sent": False,
+                "mutated": False,
+            }
+        )
+        return {}
+    return d if isinstance(d, dict) else {}
+
+
+def record_cancel_refusal(
+    order_id: str | int,
+    repo_root: Path | None = None,
+    now: datetime | None = None,
+) -> None:
+    """Persist a 400 so the same order is not re-DELETEd every 900s."""
+    p = _cancel_refusal_path(repo_root)
+    state = load_cancel_refusals(repo_root)
+    state[str(order_id)] = now_et(now).strftime("%Y-%m-%d")
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_suffix(p.suffix + ".tmp")
+        tmp.write_text(json.dumps(state, indent=2, sort_keys=True))
+        os.replace(tmp, p)
+    except Exception as e:
+        logj(
+            {
+                "op": "cancel_refusal_state",
+                "execute": "write_failed",
+                "error": type(e).__name__,
+                "path": str(p),
+                "order_id": str(order_id),
+                "sent": False,
+                "mutated": False,
+            }
+        )
+
+
+def cancel_refused_today(
+    order_id: str | int,
+    repo_root: Path | None = None,
+    now: datetime | None = None,
+) -> bool:
+    return load_cancel_refusals(repo_root).get(str(order_id)) == now_et(now).strftime(
+        "%Y-%m-%d"
+    )
+
+
+def execute_action(
+    action: dict,
+    live: bool,
+    rth: bool | None = None,
+    repo_root: Path | None = None,
+    now: datetime | None = None,
+) -> dict:
+    """Apply one planned action. Dry-run never marks sent.
+
+    `sent` = an order was PLACED. `mutated` = broker state changed (place OR
+    cancel). A cancel reports execute='canceled' + mutated=True, never sent.
+    """
     out = deepcopy(action)
     out["dry_run"] = not live
     out["sent"] = False
+    out.setdefault("mutated", False)
+    out["mutated"] = False
     if not live:
         out["execute"] = "dry_run"
         return out
@@ -1011,35 +1135,49 @@ def execute_action(action: dict, live: bool) -> dict:
         res = place_gtc_bracket(**params)
         out["schwab"] = {k: res.get(k) for k in ("http", "order_id", "error")}
         out["sent"] = res.get("http") in (200, 201)
+        out["mutated"] = out["sent"]
         out["execute"] = "posted" if out["sent"] else "post_failed"
         return out
     if op == "place_protect_stop":
         res = place_protect_stop(**params)
         out["schwab"] = {k: res.get(k) for k in ("http", "order_id", "error")}
         out["sent"] = res.get("http") in (200, 201)
+        out["mutated"] = out["sent"]
         out["execute"] = "posted" if out["sent"] else "post_failed"
         return out
     if op == "cancel_abandon":
         order_id = params.get("order_id")
         if not order_id:
             out["execute"] = "cancel_failed_no_order_id"
-            out["sent"] = False
+            return out
+        # RTH gate: a cancel of a PENDING_ACTIVATION order after hours returns
+        # 400 (proven live 2026-08-30). Plan it, do not fire it.
+        rth_now = in_rth(now) if rth is None else bool(rth)
+        if not rth_now:
+            out["execute"] = "cancel_deferred_outside_rth"
+            return out
+        # A 400 already logged today is not retried until the next trading day.
+        if cancel_refused_today(order_id, repo_root, now):
+            out["execute"] = "cancel_skipped_refused_today"
             return out
         res = cancel_by_id(order_id)
         out["schwab"] = {k: res.get(k) for k in ("http", "error")}
-        # HTTP 200/204 = success; 400 after hours on PENDING_ACTIVATION = leave it
         if res.get("http") in (200, 204):
-            out["sent"] = True
+            out["mutated"] = True
             out["execute"] = "canceled"
         elif res.get("http") == 400:
-            out["sent"] = False
+            record_cancel_refusal(order_id, repo_root, now)
             out["execute"] = "cancel_refused_400_after_hours"
         else:
-            out["sent"] = False
             out["execute"] = "cancel_failed"
         return out
     out["execute"] = "no_mutation"
     return out
+
+
+# Ticket outcomes that clear the outbox. Everything else quarantines to
+# failed/ — a refused ticket is never retried silently on the next cycle.
+_TICKET_DONE = ("posted", "canceled", "skip_already_sent")
 
 
 def run_cycle(
@@ -1048,7 +1186,9 @@ def run_cycle(
     live: bool = False,
     broker_note: str = "",
     rules_path: str = "",
+    repo_root: Path | None = None,
 ) -> list[dict]:
+    rth = book.get("in_rth") if "in_rth" in book else in_rth()
     header = {
         "op": "cycle",
         "mode": "live" if live else "dry-run",
@@ -1056,32 +1196,69 @@ def run_cycle(
         "rules_path": rules_path,
         "equity": book.get("equity"),
         "armed": bool(book.get("armed")),
-        "in_rth": book.get("in_rth") if "in_rth" in book else in_rth(),
+        "in_rth": rth,
         "sent": False,
+        "mutated": False,
         "dry_run": not live,
     }
     logj(header)
-    
-    # Process outbox tickets first
-    outbox_tickets = load_outbox_tickets()
+
+    # --- outbox lane ---
+    # Every ticket is gated against the same rules/book as a planned entry, and
+    # every ticket is wrapped: a poison ticket must never stop the protect lane
+    # below it. run_cycle ALWAYS reaches plan_actions.
+    outbox_results: list[dict] = []
+    try:
+        outbox_tickets = load_outbox_tickets(repo_root)
+    except Exception as e:
+        outbox_tickets = []
+        logj(
+            {
+                "op": "outbox_scan",
+                "execute": "exception",
+                "error": type(e).__name__,
+                "sent": False,
+                "mutated": False,
+                "dry_run": not live,
+            }
+        )
     for ticket_data in outbox_tickets:
-        e = execute_outbox_ticket(ticket_data, live=live)
+        path = ticket_data.get("path")
+        try:
+            e = execute_outbox_ticket(
+                ticket_data, live=live, rules=rules, book=book, repo_root=repo_root
+            )
+        except Exception as exc:
+            e = {
+                "op": "outbox_ticket",
+                "ticket_id": (ticket_data.get("ticket") or {}).get("id"),
+                "symbol": (ticket_data.get("ticket") or {}).get("symbol"),
+                "execute": "exception",
+                "error": type(exc).__name__,
+                "sent": False,
+                "mutated": False,
+                "dry_run": not live,
+            }
         logj(e)
-        # Move ticket based on result
-        if e.get("sent"):
-            move_ticket(ticket_data["path"], "done")
-        elif e.get("execute") in ("post_failed", "cancel_failed", "unknown_action"):
-            move_ticket(ticket_data["path"], "failed")
-    
+        outbox_results.append(e)
+        if e.get("dry_run"):
+            continue
+        if path is not None:
+            move_ticket(
+                path,
+                "done" if e.get("execute") in _TICKET_DONE else "failed",
+                repo_root,
+            )
+
     planned = plan_actions(rules, book)
     executed = []
     for a in planned:
-        e = execute_action(a, live=live)
+        e = execute_action(a, live=live, rth=rth, repo_root=repo_root)
         logj(e)
         executed.append(e)
     if not planned:
         logj(_action("skip", None, "no_planned_actions"))
-    return [header] + executed
+    return [header] + outbox_results + executed
 
 
 def cmd_status(rules: dict, book: dict, broker_note: str, rules_path: str) -> int:
@@ -1132,7 +1309,11 @@ def resolve_book(rules: dict) -> tuple[dict, str]:
 
 
 def load_outbox_tickets(repo_root: Path | None = None) -> list[dict]:
-    """Scan config/outbox/*.json for approved tickets. Never re-send WORKING."""
+    """Scan config/outbox/*.json for approved tickets.
+
+    An unreadable file is RETURNED with a load_error rather than swallowed, so
+    the caller quarantines it instead of leaving it to be re-read every cycle.
+    """
     root = repo_root or REPO_ROOT
     outbox = root / "config" / "outbox"
     if not outbox.exists():
@@ -1141,79 +1322,389 @@ def load_outbox_tickets(repo_root: Path | None = None) -> list[dict]:
     for p in sorted(outbox.glob("*.json")):
         try:
             t = json.loads(p.read_text())
-            if t.get("status") == "approved" and t.get("risk_stamped"):
-                tickets.append({"ticket": t, "path": p})
-        except Exception:
-            pass
+        except Exception as e:
+            tickets.append({"ticket": {}, "path": p, "load_error": type(e).__name__})
+            continue
+        if not isinstance(t, dict):
+            tickets.append({"ticket": {}, "path": p, "load_error": "not_a_json_object"})
+            continue
+        # Unapproved / un-stamped tickets are left in place: they are waiting
+        # for a human, not failing.
+        if t.get("status") == "approved" and t.get("risk_stamped") is True:
+            tickets.append({"ticket": t, "path": p})
     return tickets
 
 
-def move_ticket(src: Path, result: str, repo_root: Path | None = None) -> None:
-    """Move ticket to done/ or failed/ subfolder."""
+def move_ticket(src: Path, result: str, repo_root: Path | None = None) -> bool:
+    """Move ticket to done/ or failed/. Returns success; never swallows silently."""
     root = repo_root or REPO_ROOT
     dest_folder = root / "config" / "outbox" / result
-    dest_folder.mkdir(parents=True, exist_ok=True)
+    dest = dest_folder / src.name
     try:
-        src.rename(dest_folder / src.name)
-    except Exception:
-        pass
+        dest_folder.mkdir(parents=True, exist_ok=True)
+        if dest.exists():
+            dest = dest_folder / f"{src.stem}.{now_et().strftime('%Y%m%dT%H%M%S')}{src.suffix}"
+        os.replace(src, dest)
+        return True
+    except Exception as e:
+        logj(
+            {
+                "op": "outbox_move",
+                "execute": "move_failed",
+                "error": type(e).__name__,
+                "src": str(src),
+                "dest": str(dest),
+                "note": "ticket left in outbox; a stamped ticket will skip next cycle",
+                "sent": False,
+                "mutated": False,
+            }
+        )
+        return False
 
 
-def execute_outbox_ticket(ticket_data: dict, live: bool) -> dict:
-    """Execute one approved ticket. Never re-send if order_id already WORKING."""
+def _is_num(v: Any) -> bool:
+    return (
+        isinstance(v, (int, float))
+        and not isinstance(v, bool)
+        and math.isfinite(float(v))
+    )
+
+
+def _ticket_schema_errors(t: dict) -> list[str]:
+    """Type-check a ticket BEFORE any value is used. No float(None) paths."""
+    errs: list[str] = []
+    tid = t.get("id")
+    if not isinstance(tid, str) or not tid.strip():
+        errs.append("id_must_be_nonempty_string")
+    action = t.get("action")
+    if not isinstance(action, str) or not action.strip():
+        return errs + ["action_must_be_nonempty_string"]
+    a = action.strip().lower()
+    if a == "place_gtc_bracket":
+        sym = t.get("symbol")
+        if not isinstance(sym, str) or not sym.strip():
+            errs.append("symbol_must_be_nonempty_string")
+        qty = t.get("qty")
+        if not isinstance(qty, int) or isinstance(qty, bool) or qty <= 0:
+            errs.append("qty_must_be_positive_int")
+        px_ok = True
+        for k in ("limit", "stop"):
+            v = t.get(k)
+            if not _is_num(v) or float(v) <= 0:
+                errs.append(f"{k}_must_be_positive_number")
+                px_ok = False
+        side = t.get("side", "BUY")
+        if not isinstance(side, str) or side.strip().upper() != "BUY":
+            errs.append("side_must_be_BUY")
+        stop_side = t.get("stop_side", "SELL")
+        if not isinstance(stop_side, str) or stop_side.strip().upper() != "SELL":
+            errs.append("stop_side_must_be_SELL")
+        if px_ok and float(t.get("stop")) >= float(t.get("limit")):
+            errs.append("stop_must_be_below_limit_for_buy")
+    elif a == "cancel_by_id":
+        oid = t.get("order_id")
+        if (
+            isinstance(oid, bool)
+            or not isinstance(oid, (str, int))
+            or (isinstance(oid, str) and not oid.strip())
+        ):
+            errs.append("order_id_must_be_nonempty_string_or_int")
+    else:
+        errs.append("unknown_action")
+    return errs
+
+
+def working_order_by_id(book: dict, order_id: Any) -> dict | None:
+    """Working order with this id. Ids arrive as int from Schwab, str in tickets."""
+    want = str(order_id).strip()
+    for o in book.get("orders") or []:
+        oid = o.get("id") if o.get("id") is not None else o.get("orderId")
+        if oid is None:
+            continue
+        if str(oid).strip() == want and order_is_working(o):
+            return o
+    return None
+
+
+def duplicate_working_order(
+    book: dict, symbol: str, side: str, qty: Any, limit: Any
+) -> dict | None:
+    """Working order matching symbol+side+qty+limit. Prices compared at cents."""
+    try:
+        want_qty = int(qty)
+        want_px = round(float(limit), 2)
+    except (TypeError, ValueError):
+        return None
+    for o in book.get("orders") or []:
+        if order_symbol(o) != symbol or not order_is_working(o):
+            continue
+        if order_side(o) != str(side).upper():
+            continue
+        px = _f(o.get("price") if o.get("price") is not None else o.get("limit"))
+        oq = o.get("qty") if o.get("qty") is not None else o.get("quantity")
+        try:
+            if px is None or int(float(oq)) != want_qty:
+                continue
+        except (TypeError, ValueError):
+            continue
+        if round(px, 2) == want_px:
+            return o
+    return None
+
+
+def ticket_notional_cap(rules: dict, equity: float | None) -> float | None:
+    """Hard per-ticket notional ceiling in dollars, or None if uncomputable.
+
+    `max_ticket_notional`     — absolute dollars (optional, unambiguous unit)
+    `max_ticket_notional_pct` — fraction of live equity (default 0.35)
+    Both present → the tighter one wins.
+    """
+    r = rules.get("risk") or {}
+    caps: list[float] = []
+    try:
+        pct = float(r.get("max_ticket_notional_pct", MAX_TICKET_NOTIONAL_PCT_DEFAULT))
+    except (TypeError, ValueError):
+        pct = MAX_TICKET_NOTIONAL_PCT_DEFAULT
+    if equity is not None and equity > 0 and pct > 0:
+        caps.append(equity * pct)
+    usd = r.get("max_ticket_notional")
+    if usd is not None:
+        try:
+            u = float(usd)
+            if u > 0:
+                caps.append(u)
+        except (TypeError, ValueError):
+            pass
+    return min(caps) if caps else None
+
+
+def gate_outbox_ticket(
+    t: dict, rules: dict, book: dict, now: datetime | None = None
+) -> tuple[str | None, dict]:
+    """Apply the plan_actions gates to an outbox ticket.
+
+    Returns (refusal_reason | None, detail). A ticket that clears every gate
+    returns (None, detail) and only then may be POSTed.
+    """
+    detail: dict = {}
+    errs = _ticket_schema_errors(t)
+    if errs:
+        return "ticket_schema_invalid", {"schema_errors": errs}
+
+    action = str(t.get("action")).strip().lower()
+    detail["action"] = action
+    rth = book.get("in_rth")
+    if rth is None:
+        rth = in_rth(now)
+    detail["in_rth"] = bool(rth)
+
+    if action == "cancel_by_id":
+        order_id = t.get("order_id")
+        detail["order_id"] = str(order_id)
+        target = working_order_by_id(book, order_id)
+        if target is None:
+            return "cancel_order_id_not_working_in_book", detail
+        sym = order_symbol(target)
+        detail["symbol"] = sym
+        if sym not in LIVE_UNIVERSE or sym in PROTECT_ONLY:
+            return "cancel_symbol_not_in_live_universe", detail
+        if not rth:
+            return "outside_rth", detail
+        return None, detail
+
+    # --- place_gtc_bracket ---
+    sym = str(t.get("symbol")).strip().upper()
+    qty = int(t.get("qty"))
+    limit = float(t.get("limit"))
+    stop = float(t.get("stop"))
+    detail.update({"symbol": sym, "ticket_qty": qty, "limit": limit, "stop": stop})
+
+    if sym not in LIVE_UNIVERSE:
+        return "not_in_live_universe", detail
+    if sym in PROTECT_ONLY:
+        return "protect_only_no_entry", detail
+
+    # arm + RTH, exactly as plan_actions gates a new entry
+    if bool(rules.get("arm_required", True)) and not bool(book.get("armed")):
+        return "arm_required", detail
+    if not rth:
+        return "outside_rth", detail
+
+    # the same risk box a planned entry passes through
+    box = risk_box(rules, book)
+    if not box["ok"]:
+        detail["risk_box"] = box["reasons"]
+        return "new_risk_blocked", detail
+
+    equity = box["equity"]
+    detail["equity"] = equity
+    if equity is None or equity <= 0:
+        return "equity_unknown_cannot_size", detail
+
+    # the same risk primitive plan_actions uses to size a new entry
+    cfg = _risk(rules)
+    clipped = clip_qty(qty, limit, stop, equity, cfg["risk_pct"])
+    detail["clipped_qty"] = clipped
+    detail["risk_pct"] = cfg["risk_pct"]
+    if clipped <= 0:
+        return "qty_clipped_to_zero", detail
+    if qty > clipped:
+        return "ticket_qty_exceeds_risk_clip", detail
+
+    cap = ticket_notional_cap(rules, equity)
+    notional = round(qty * limit, 4)
+    detail["notional"] = notional
+    detail["max_ticket_notional"] = cap
+    if cap is None:
+        return "notional_cap_uncomputable", detail
+    if notional > cap:
+        return "ticket_notional_over_cap", detail
+
+    existing = existing_entry(book, sym)
+    if existing:
+        detail["existing_order_id"] = existing.get("id") or existing.get("orderId")
+        return "existing_entry_in_book", detail
+    sell = existing_sell(book, sym)
+    if sell:
+        detail["existing_order_id"] = sell.get("id") or sell.get("orderId")
+        return "one_sell_law_existing_sell", detail
+    if position_qty(book, sym) > 0:
+        return "already_long_no_add", detail
+
+    dup = duplicate_working_order(book, sym, "BUY", qty, limit)
+    if dup:
+        detail["duplicate_order_id"] = dup.get("id") or dup.get("orderId")
+        return "duplicate_working_order", detail
+
+    return None, detail
+
+
+def stamp_ticket_order_id(path: Path, ticket: dict, order_id: Any) -> bool:
+    """Write the broker order_id back into the ticket file, atomically.
+
+    Runs BEFORE the move. If the move then fails, the ticket still carries
+    schwab_order_id and later cycles skip it instead of double-sending.
+    """
+    try:
+        data = dict(ticket)
+        data["schwab_order_id"] = str(order_id)
+        data["stamped_at"] = now_et().isoformat()
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(data, indent=2, sort_keys=True))
+        os.replace(tmp, path)
+        return True
+    except Exception as e:
+        logj(
+            {
+                "op": "outbox_stamp",
+                "execute": "stamp_failed",
+                "error": type(e).__name__,
+                "path": str(path),
+                "order_id": str(order_id),
+                "note": "ORDER IS LIVE AT THE BROKER AND THE TICKET IS UNSTAMPED",
+                "sent": False,
+                "mutated": False,
+            }
+        )
+        return False
+
+
+def execute_outbox_ticket(
+    ticket_data: dict,
+    live: bool,
+    rules: dict,
+    book: dict,
+    repo_root: Path | None = None,
+    now: datetime | None = None,
+) -> dict:
+    """Execute one approved ticket, under the same gates as a planned entry.
+
+    rules and book are REQUIRED: the PR shipped this path with neither, so a
+    ticket could name any symbol, any size, at any hour. Gates are evaluated in
+    dry-run too, so a dry cycle reports exactly what a live cycle would refuse.
+    """
     t = ticket_data.get("ticket") or {}
-    out = {
+    path = ticket_data.get("path")
+    out: dict = {
         "op": "outbox_ticket",
         "ticket_id": t.get("id"),
         "symbol": t.get("symbol"),
         "dry_run": not live,
         "sent": False,
+        "mutated": False,
     }
-    if not live:
-        out["execute"] = "dry_run"
+
+    if ticket_data.get("load_error"):
+        out["execute"] = "refused"
+        out["reason"] = "ticket_unreadable"
+        out["error"] = ticket_data["load_error"]
         return out
-    
-    # Check if order_id already exists and is WORKING
+    if not isinstance(rules, dict) or not rules:
+        out["execute"] = "refused"
+        out["reason"] = "rules_missing"
+        return out
+    if not isinstance(book, dict) or not book:
+        out["execute"] = "refused"
+        out["reason"] = "book_missing"
+        return out
+
     existing_oid = t.get("schwab_order_id")
     if existing_oid:
         out["execute"] = "skip_already_sent"
         out["existing_order_id"] = existing_oid
         return out
-    
-    action = t.get("action", "").lower()
+
+    reason, detail = gate_outbox_ticket(t, rules, book, now)
+    out["gate"] = detail
+    if reason is not None:
+        out["execute"] = "refused"
+        out["reason"] = reason
+        return out
+
+    if not live:
+        out["execute"] = "dry_run"
+        out["reason"] = "gates_passed_would_post"
+        return out
+
+    action = detail["action"]
     if action == "place_gtc_bracket":
         res = place_gtc_bracket(
-            symbol=t.get("symbol"),
-            qty=t.get("qty"),
-            limit=t.get("limit"),
-            stop=t.get("stop"),
-            side=t.get("side", "BUY"),
-            stop_side=t.get("stop_side", "SELL"),
+            symbol=detail["symbol"],
+            qty=detail["ticket_qty"],
+            limit=detail["limit"],
+            stop=detail["stop"],
+            side="BUY",
+            stop_side="SELL",
         )
         out["schwab"] = {k: res.get(k) for k in ("http", "order_id", "error")}
-        out["sent"] = res.get("http") in (200, 201)
-        out["execute"] = "posted" if out["sent"] else "post_failed"
+        posted = res.get("http") in (200, 201)
+        out["sent"] = posted
+        out["mutated"] = posted
+        out["execute"] = "posted" if posted else "post_failed"
+        if posted and path is not None:
+            # stamp BEFORE the move — idempotency does not depend on the move
+            out["stamped"] = stamp_ticket_order_id(
+                path, t, res.get("order_id") or "posted_no_location"
+            )
         return out
-    elif action == "cancel_by_id":
-        order_id = t.get("order_id")
-        if not order_id:
-            out["execute"] = "cancel_failed_no_order_id"
-            return out
-        res = cancel_by_id(order_id)
-        out["schwab"] = {k: res.get(k) for k in ("http", "error")}
-        if res.get("http") in (200, 204):
-            out["sent"] = True
-            out["execute"] = "canceled"
-        elif res.get("http") == 400:
-            out["sent"] = False
-            out["execute"] = "cancel_refused_400_after_hours"
-        else:
-            out["sent"] = False
-            out["execute"] = "cancel_failed"
+
+    # cancel_by_id — gated above to a working order on a live-universe symbol
+    order_id = t.get("order_id")
+    if cancel_refused_today(order_id, repo_root, now):
+        out["execute"] = "refused"
+        out["reason"] = "cancel_skipped_refused_today"
         return out
+    res = cancel_by_id(order_id)
+    out["schwab"] = {k: res.get(k) for k in ("http", "error")}
+    if res.get("http") in (200, 204):
+        out["mutated"] = True
+        out["execute"] = "canceled"
+    elif res.get("http") == 400:
+        record_cancel_refusal(order_id, repo_root, now)
+        out["execute"] = "cancel_refused_400_after_hours"
     else:
-        out["execute"] = "unknown_action"
-        return out
+        out["execute"] = "cancel_failed"
+    return out
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1261,7 +1752,14 @@ def main(argv: list[str] | None = None) -> int:
         rc = cmd_status(rules, book, note, rules_path)
     if do_once:
         live = bool(args.live) and live_authorized()[0]
-        run_cycle(rules, book, live=live, broker_note=note, rules_path=rules_path)
+        run_cycle(
+            rules,
+            book,
+            live=live,
+            broker_note=note,
+            rules_path=rules_path,
+            repo_root=REPO_ROOT,
+        )
         if args.live and not live:
             rc = 2
     return rc

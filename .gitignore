@@ -27,6 +27,7 @@ config/mv_session.json
 config/outbox/*.json
 config/outbox/done/
 config/outbox/failed/
+config/cancel_refusals.json
 logs/schwab_account_snapshot.json
 logs/schwab_oauth_reauth.log
 tf-actloop.patch

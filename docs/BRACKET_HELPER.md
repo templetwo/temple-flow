@@ -24,16 +24,37 @@ Implication for the helper:
 2. Flatten path: RTH only. Cancel (or REPLACE) the existing stop, then one OCO (LIMIT take-profit XOR STOP). Never POST a second standalone SELL.
 3. After hours: no flatten retry. Leave the stop. Next RTH replace.
 4. Two singles is not an OCO. Schwab treats the stop as owning the share.
-5. **Enforcement:** `plan_actions` now refuses to place a SELL if any working SELL order exists on that symbol (one-sell law).
+5. **Enforcement, and its exact scope.** `existing_sell()` is the primitive; the
+   refusal is wired into **three** places, and nowhere else:
+   - `plan_actions` protect lane — refuses a protect STOP when any SELL is working.
+   - `plan_actions` entry lane — refuses a **bracket** when any SELL is working,
+     because the bracket carries a child STOP SELL. (Added 2026-09-02. Until
+     then the law was enforced only on the protect lane, so the entry lane could
+     post exactly the second SELL Schwab rejected above.)
+   - the outbox gate — same refusal, reason `one_sell_law_existing_sell`.
+
+   It is **not** a property of `place_gtc_bracket()` itself. That function POSTs
+   whatever it is handed. Anything calling it directly — a one-off script, a
+   REPL, `scripts/send_tf_*.py` — bypasses the law entirely. The law lives in the
+   planner and the gate, not in the wire.
 
 See `docs/AMENDMENTS_2026-08-30.md`.
 
 ## Wire status
 
-- ✅ **place_gtc_bracket**: real, tested live
-- ✅ **cancel_by_id**: wired, handles 400 after hours
-- ✅ **one-sell enforcement**: planner refuses duplicate SELLs
-- ✅ **Ticket outbox**: `config/outbox/*.json` for one-off approved tickets
-- ✅ **Install script**: `scripts/install_act_loop.sh` for launchd setup
+- **place_gtc_bracket**: real, proven live 2026-08-30 (HTTP 201, order 1007762031724)
+- **cancel_by_id**: wired. Universe-restricted, RTH-only, and a Schwab 400 is
+  persisted to `config/cancel_refusals.json` so it is retried at most once per
+  trading day rather than every 900s.
+- **one-sell enforcement**: planner (both lanes) + outbox gate. See the scope note above.
+- **Ticket outbox**: `config/outbox/*.json`, gated on schema, universe, arm, RTH,
+  risk box, `clip_qty`, a per-ticket notional cap, and book state. Every refusal
+  quarantines to `failed/`. See `runbooks/AWAY_MODE.md` for the schema and guards.
+- **Install script**: `scripts/install_act_loop.sh`. Decides and prints the
+  LIVE_OK state before it loads anything, and refuses to arm a live daemon
+  implicitly.
 
-The bracket helper is **production-ready** for Studio launchd use with `config/LIVE_OK` gate.
+**Status: wired and gated, not "production-ready" in the sense of unattended and
+proven.** The helper has one live fill behind it. The guard layer above it has
+unit tests but no live session yet. `config/LIVE_OK` is the only thing between a
+loaded plist and real money — treat every change here as a live-fire change.
