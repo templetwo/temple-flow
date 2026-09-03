@@ -18,7 +18,7 @@ import sys
 import tempfile
 import unittest
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -1135,6 +1135,30 @@ class TestHintBookAnswersNoGate(unittest.TestCase):
     POST path.
     """
 
+    def setUp(self):
+        """No test in this class may consult the real broker.
+
+        PRE-EXISTING HOLE, closed here rather than in the wire: every test
+        below calls resolve_book, which calls fetch_book, which is NOT
+        short-circuited on a machine where the broker is installed --
+        broker_available() is True whenever
+        <SPIRAL_BROKER_ROOT>/src/token_manager.py exists, and it does on the
+        Studio. fetch_book then os.chdir()s into the broker root (mutating this
+        process's cwd for every test after it), loads .env, builds a
+        TokenManager and can issue real read-only GETs to Schwab.
+
+        These tests all assert source == "fallback_hint", i.e. they assert the
+        read FAILED -- so they passed only because the OAuth refresh happens to
+        be dead. That is a passing test resting on a broken credential, not
+        isolation. Patching fetch_book makes the fallback path the thing under
+        test rather than a symptom, and holds on a machine where the token
+        works. The SPIRAL_BROKER_ROOT=/nonexistent pin in the documented test
+        command is the belt; this is the braces.
+        """
+        original = temple_flow_wire.fetch_book
+        temple_flow_wire.fetch_book = lambda: (None, "test: broker not consulted")
+        self.addCleanup(setattr, temple_flow_wire, "fetch_book", original)
+
     def test_fallback_book_states_neither_armed_nor_rth(self):
         book = temple_flow_wire.fallback_book(studio_shaped_rules())
         self.assertNotIn("armed", book, "armed_hint must not answer the arm gate")
@@ -1552,14 +1576,47 @@ class TestRefusalClassificationIsComplete(unittest.TestCase):
                 return node
         raise AssertionError(f"{name} not found in temple_flow_wire")
 
+    #: The wire's single refusal exit inside execute_outbox_ticket. Reserved:
+    #: any function defining or calling something by this name is scanned for
+    #: its literal first argument.
+    REFUSE_CALL = "_refuse"
+
+    @staticmethod
+    def _refuse_literal(node: ast.AST) -> str | None:
+        """The literal first argument of a `_refuse("<reason>")` call, if any."""
+        if not isinstance(node, ast.Call):
+            return None
+        fn = node.func
+        if not (isinstance(fn, ast.Name) and fn.id == TestRefusalClassificationIsComplete.REFUSE_CALL):
+            return None
+        if not node.args:
+            return None
+        first = node.args[0]
+        if isinstance(first, ast.Constant) and isinstance(first.value, str) and first.value:
+            return first.value
+        return None
+
     @classmethod
     def _reasons_in(cls, tree: ast.Module, name: str) -> set:
         """String literals this function can hand back as a refusal reason.
 
-        Two shapes, because the wire uses two: `return "<reason>", detail`
-        (and book_is_live_eligible's `return False, "<reason>"`), and
-        `out["reason"] = "<reason>"`. Reads the file rather than the imported
-        object so indentation and decorators cannot skew it.
+        THREE shapes, because the wire uses three:
+
+          1. `return "<reason>", detail` — gate_outbox_ticket,
+             ticket_wait_bounds_refusal (and book_is_live_eligible's
+             `return False, "<reason>"`).
+          2. `out["reason"] = "<reason>"` — the dry-run / outcome assignments.
+          3. `return _refuse("<reason>")` — EVERY refusal in
+             execute_outbox_ticket since the wait/die split landed.
+
+        Shape 3 was missing for one commit, and the cost was exact: the four
+        reasons execute_outbox_ticket names went unscanned, so the completeness
+        assertion below was complete BY HAND rather than by test, while the
+        docstring claimed otherwise. test_the_refuse_shape_is_not_invisible is
+        the standing positive control that it stays visible.
+
+        Reads the file rather than the imported object so indentation and
+        decorators cannot skew it.
         """
         found = set()
         for node in ast.walk(cls._func(tree, name)):
@@ -1578,6 +1635,9 @@ class TestRefusalClassificationIsComplete(unittest.TestCase):
                         and tgt.slice.value == "reason"
                     ):
                         found.add(node.value.value)
+            literal = cls._refuse_literal(node)
+            if literal is not None:
+                found.add(literal)
         return found
 
     def test_every_reason_is_in_exactly_one_set(self):
@@ -1601,6 +1661,37 @@ class TestRefusalClassificationIsComplete(unittest.TestCase):
                 f"refusal reason {reason!r} is in BOTH sets",
             )
 
+    def test_the_refuse_shape_is_not_invisible(self):
+        """Positive control on the extractor, not on the wire.
+
+        The whole completeness assertion above is worthless if the extractor
+        cannot see the shape the wire actually uses. It could not, for one
+        commit: execute_outbox_ticket routes EVERY refusal through
+        `_refuse("<literal>")`, an ast.Call, and the extractor inspected only
+        Return-of-Tuple and `out["reason"] = ...`. It therefore contributed a
+        single string — `gates_passed_would_post` — which NOT_REFUSALS removed,
+        leaving it contributing ZERO reasons while the docstring advertised
+        full coverage. Injecting an unclassified reason left this class green.
+
+        This test is what makes the injection go red and stay red.
+        """
+        tree = self._module_tree()
+        found = self._reasons_in(tree, "execute_outbox_ticket")
+        for known in ("ticket_unreadable", "rules_missing", "book_missing"):
+            self.assertIn(
+                known,
+                found,
+                f"the extractor no longer sees {known!r}, which the wire "
+                f"refuses via _refuse(). Every reason reached only through "
+                f"_refuse is unclassified and quarantines silently.",
+            )
+        self.assertGreaterEqual(
+            len(found - self.NOT_REFUSALS),
+            3,
+            "execute_outbox_ticket must contribute its own reasons to the "
+            "completeness scan, not ride on the other three functions",
+        )
+
     def test_the_two_sets_are_disjoint_and_the_helper_fails_closed(self):
         self.assertEqual(
             temple_flow_wire.WAIT_REFUSALS & temple_flow_wire.TERMINAL_REFUSALS,
@@ -1620,9 +1711,15 @@ class TestRefusalClassificationIsComplete(unittest.TestCase):
         A new helper that returns ("some_reason", detail) and is called from
         gate_outbox_ticket would be invisible to the scan above — the reason
         would ship unclassified and the completeness test would still pass.
+
+        Both reason-producing shapes are guarded, for the identical reason:
+        a tuple-returning helper, and any function that calls `_refuse` with a
+        literal. `_refuse` is a RESERVED NAME in this wire — if a second one is
+        ever defined elsewhere, its host function belongs in SCANNED.
         """
         tree = self._module_tree()
         returners = set()
+        refusers = set()
         for node in ast.walk(tree):
             if not isinstance(node, ast.FunctionDef):
                 continue
@@ -1636,11 +1733,21 @@ class TestRefusalClassificationIsComplete(unittest.TestCase):
                     and sub.value.elts[0].value
                 ):
                     returners.add(node.name)
+                if self._refuse_literal(sub) is not None:
+                    refusers.add(node.name)
         self.assertLessEqual(
             returners,
             set(self.SCANNED),
             "a function outside SCANNED now returns a reason literal; add it "
             "to SCANNED so its reasons are classified",
+        )
+        # The nested def _refuse itself is walked as its own FunctionDef when
+        # it contains a _refuse call; it does not, so only its hosts appear.
+        self.assertLessEqual(
+            refusers,
+            set(self.SCANNED),
+            "a function outside SCANNED now names a reason through _refuse(); "
+            "add it to SCANNED so its reasons are classified",
         )
 
 
@@ -2003,6 +2110,202 @@ class TestWaitNotDie(unittest.TestCase):
         )
         self.assertEqual(reason, "arm_required")
         self.assertIn("max_wait_days_problem", detail)
+
+    def test_max_opens_is_not_a_daily_box_and_the_wait_is_indefinite(self):
+        """Locks the WAIT_REFUSALS docstring to a measurement.
+
+        That docstring called the risk box "a daily box that resets". Only the
+        day breaker is day-scoped. count_opens counts DISTINCT SYMBOLS holding
+        a position with qty>0 or a working BUY entry, and the standing NVO/NOK
+        protect-only positions occupy 2 of them permanently.
+
+        MEASURED HERE, including the bound that makes it narrower than it
+        sounds: with a two-symbol live universe a ticket that reaches the risk
+        box caps opens at 3, so the DEFAULT max_opens 4 passes. Saturation
+        needs a fourth distinct symbol or a tighter cap. Both persist across
+        days -- which is the point: `new_risk_blocked` is a WAIT, so the ticket
+        parks indefinitely, bounded only by expires_at / outbox.max_wait_days.
+        """
+        self.assertIn("new_risk_blocked", temple_flow_wire.WAIT_REFUSALS)
+        base = base_book()
+        self.assertEqual(
+            temple_flow_wire.count_opens(base),
+            2,
+            "NVO + NOK occupy two open slots with no order working",
+        )
+
+        # The default cap does NOT block: opens tops out at 3 for a reachable
+        # ticket. Stated so nobody cites this hazard as firing today.
+        three = base_book()
+        three["positions"].append({"symbol": "IBIT", "qty": 2})
+        self.assertEqual(temple_flow_wire.count_opens(three), 3)
+        self.assertIsNone(
+            gate_outbox_ticket(ticket(qty=11), example_rules(), three, now=self.at(10))[0]
+        )
+
+        # A fourth distinct symbol in the account saturates the default cap.
+        four = base_book()
+        four["positions"] += [{"symbol": "IBIT", "qty": 2}, {"symbol": "AAPL", "qty": 5}]
+        self.assertEqual(temple_flow_wire.count_opens(four), 4)
+        reason, detail = gate_outbox_ticket(
+            ticket(qty=11), example_rules(), four, now=self.at(10)
+        )
+        self.assertEqual(reason, "new_risk_blocked")
+        self.assertEqual(detail["opens"], 4)
+
+        # Same book, a different day: still blocked. Nothing resets it.
+        later, _ = gate_outbox_ticket(
+            ticket(qty=11), example_rules(), four, now=self.at(10, day=10)
+        )
+        self.assertEqual(later, "new_risk_blocked", "max_opens is not day-scoped")
+
+    def test_a_huge_max_wait_days_waits_instead_of_raising(self):
+        """A config meaning "never expire" must not kill every waiting ticket.
+
+        MEASURED before the fix: `max_wait_days: 1e12` parsed clean, then
+        `first_seen + timedelta(days=1e12)` raised OverflowError, run_cycle
+        caught it into execute="exception", and the ticket was quarantined to
+        failed/. `999999999` got past timedelta and overflowed the datetime
+        ADD instead — so bounding the value alone would not have fixed it.
+        The wire measures elapsed time now, which is total over every finite
+        value. Both sentinels below must WAIT, which is what the docstring on
+        outbox_max_wait_days has always promised.
+        """
+        for sentinel in (1e12, 999999999, 999999999999):
+            with self.subTest(sentinel=sentinel):
+                rules = example_rules()
+                rules["outbox"] = {"max_wait_days": sentinel}
+                days, problem = temple_flow_wire.outbox_max_wait_days(rules)
+                self.assertIsNone(problem)
+                self.assertEqual(days, float(sentinel))
+                reason, detail = gate_outbox_ticket(
+                    ticket(qty=11, first_seen_at="2025-01-01T03:00:00"),
+                    rules,
+                    base_book(in_rth=False, armed=False),
+                    now=self.at(3),
+                )
+                self.assertEqual(reason, "arm_required", detail)
+                self.assertGreater(detail["waited_days"], 600)
+
+    def test_max_wait_days_true_is_not_a_one_day_limit(self):
+        """`float(True)` is 1.0. A rules value reading as "enabled" must not
+        silently become the tightest possible deadline and start killing
+        tickets after 24 hours."""
+        rules = example_rules()
+        rules["outbox"] = {"max_wait_days": True}
+        days, problem = temple_flow_wire.outbox_max_wait_days(rules)
+        self.assertIsNone(days)
+        self.assertEqual(problem, "max_wait_days_unparseable:bool")
+        reason, detail = gate_outbox_ticket(
+            ticket(qty=11, first_seen_at="2025-01-01T03:00:00"),
+            rules,
+            base_book(in_rth=False, armed=False),
+            now=self.at(3),
+        )
+        self.assertEqual(reason, "arm_required")
+        self.assertIn("max_wait_days_problem", detail)
+
+    def test_the_boundary_of_max_wait_days_is_unchanged_by_the_rewrite(self):
+        """Elapsed-vs-deadline must keep the same strict comparison.
+
+        first_seen 2026-09-01T03:00, max_wait_days 2: at exactly 2 days the
+        ticket still waits; one minute past, it dies.
+        """
+        rules = example_rules()
+        rules["outbox"] = {"max_wait_days": 2}
+        t = ticket(qty=11, first_seen_at="2026-09-01T03:00:00")
+        night = base_book(in_rth=False, armed=False)
+        exact, _ = gate_outbox_ticket(t, rules, night, now=self.at(3))
+        self.assertEqual(exact, "arm_required", "exactly at the bound waits")
+        past, _ = gate_outbox_ticket(t, rules, night, now=self.at(3, 1))
+        self.assertEqual(past, "ticket_wait_exceeded", "one minute past dies")
+
+    def test_the_rewrite_is_equivalent_at_every_boundary_including_fractions(self):
+        """The rewrite swapped exact timedelta arithmetic for a float division,
+        so it owes a proof that it did not move the boundary. This is the one
+        place the overflow fix could have changed a live disposition in a
+        direction nobody asked for -- a fractional max_wait_days flipping to
+        terminal on a rounding artifact would kill tickets silently.
+
+        Compares the pre-rewrite form against the shipped one across whole,
+        fractional and near-zero day values at the exact bound and one second
+        either side. Zero mismatches is the assertion.
+        """
+        first_seen = datetime(2026, 9, 3, 3, 0, tzinfo=self.ET)
+        mismatches = []
+        for days in (0.0, 1e-9, 0.25, 1 / 3, 0.5, 2, 3.7, 7):
+            for offset in (-60, -1, 0, 1, 60):
+                t_now = first_seen + timedelta(days=days, seconds=offset)
+                before = (first_seen + timedelta(days=days)) < t_now
+                after = ((t_now - first_seen).total_seconds() / 86400.0) > days
+                if before != after:
+                    mismatches.append((days, offset, before, after))
+        self.assertEqual(mismatches, [], "the rewrite moved the deadline")
+
+        # And end to end on the fractional case, through the real helper.
+        rules = example_rules()
+        rules["outbox"] = {"max_wait_days": 0.5}
+        t = ticket(qty=11, first_seen_at="2026-09-03T03:00:00")
+        at_bound, _ = temple_flow_wire.ticket_wait_bounds_refusal(
+            t, rules, now=first_seen + timedelta(hours=12)
+        )
+        self.assertIsNone(at_bound, "exactly half a day still waits")
+        past_bound, _ = temple_flow_wire.ticket_wait_bounds_refusal(
+            t, rules, now=first_seen + timedelta(hours=12, seconds=1)
+        )
+        self.assertEqual(past_bound, "ticket_wait_exceeded")
+
+    def test_an_expired_ticket_dies_even_when_the_book_is_missing(self):
+        """The deadline is read before the book check, not only inside the gate.
+
+        MEASURED before the fix: execute_outbox_ticket returned
+        _refuse("book_missing") — a WAIT — above the gate that evaluates
+        expires_at, so a ticket that expired in 2020 deferred forever on an
+        empty book. Reachability is honest: resolve_book always substitutes a
+        fallback book, so book={} is a direct-call hole, not a daemon one.
+        """
+        with no_network():
+            out = execute_outbox_ticket(
+                {"ticket": ticket(qty=11, expires_at="2020-01-01T00:00:00")},
+                live=True,
+                rules=example_rules(),
+                book={},
+            )
+        self.assertEqual(out["reason"], "ticket_expired")
+        self.assertEqual(out["execute"], "refused")
+        self.assertIs(out["sent"], False)
+        self.assertIs(out["mutated"], False)
+
+    def test_a_live_ticket_still_waits_on_a_missing_book(self):
+        """The other half: reordering must not turn book_missing terminal."""
+        with no_network():
+            out = execute_outbox_ticket(
+                {"ticket": ticket(qty=11)},
+                live=True,
+                rules=example_rules(),
+                book={},
+            )
+        self.assertEqual(out["reason"], "book_missing")
+        self.assertEqual(out["execute"], "deferred")
+
+    def test_an_already_sent_ticket_is_done_not_expired(self):
+        """schwab_order_id wins over every bound. A ticket that was SENT must
+        never be filed as failed/ because a deadline later passed."""
+        with no_network():
+            out = execute_outbox_ticket(
+                {
+                    "ticket": ticket(
+                        qty=11,
+                        schwab_order_id="123456",
+                        expires_at="2020-01-01T00:00:00",
+                    )
+                },
+                live=True,
+                rules=example_rules(),
+                book=base_book(),
+            )
+        self.assertEqual(out["execute"], "skip_already_sent")
+        self.assertIn(out["execute"], temple_flow_wire._TICKET_DONE)
 
     def test_a_corrupt_first_seen_at_does_not_restart_the_clock(self):
         rules = example_rules()

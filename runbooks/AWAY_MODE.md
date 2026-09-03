@@ -123,7 +123,7 @@ Optional rules field, read from `config/standing_rules.json`:
 
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
-| `outbox.max_wait_days` | number | **absent** | Absent means **no limit** — Anthony's call. Set it and a ticket that has waited more than N days from `first_seen_at` dies (`ticket_wait_exceeded`). A value that will not parse is treated as absent and reported in the log as `max_wait_days_problem`. |
+| `outbox.max_wait_days` | number | **absent** | Absent means **no limit** — Anthony's call. Set it and a ticket that has waited more than N days from `first_seen_at` dies (`ticket_wait_exceeded`). A value that will not parse is treated as absent and reported in the log as `max_wait_days_problem`; `true` counts as unparseable rather than as 1 day. A huge sentinel meaning "never expire" (`1e12`, `999999999999`) is honoured as a very long wait — it used to overflow the date arithmetic and quarantine every waiting ticket instead. |
 
 ### Guards every bracket ticket passes before a single byte is POSTed
 
@@ -197,10 +197,10 @@ treated as unproven.
 | `cancel_lane_orders_unproven` | Informational. An unproven orders leg yields an empty list, so the cancel lane plans nothing and no DELETE is emitted. Logged so "did nothing" and "could not see" are never confused. |
 | `book_not_schwab_read` / `book_missing` | The execute boundary held: only a proven Schwab read may drive a live POST or DELETE. A hint book can never reach the wire. **For an outbox ticket these WAIT**; for a planned action they refuse, because a planned action is re-derived from scratch next cycle anyway. |
 | `protect_stop_at_or_above_last_would_market_sell` | The configured stop is at or above the last trade. That is not protection, it is a market SELL on the next open. |
-| `ticket_limit_above_cap` / `through_cap_idea_dead` (outbox) | Guard 11 above. |
+| `ticket_limit_above_cap` / `through_cap_idea_dead` (outbox) | The no-chase-through-cap law, split across **guard 5** (the `limit` half, checked before any quote) and **guard 13** (the `last` half, checked last because it needs a proven quote). Both terminal. |
 | `cancel_symbol_not_in_live_universe` (at execute) | Boundary copy of the planner's universe restriction. |
 | `ticket_expired` | The ticket's own `expires_at` has passed. Terminal. |
-| `ticket_wait_exceeded` | `first_seen_at` + `outbox.max_wait_days` is behind us. Terminal. Only ever seen when that rules field is set. |
+| `ticket_wait_exceeded` | The ticket has waited longer than `outbox.max_wait_days` from `first_seen_at` (measured as elapsed days; the log carries `waited_days`). Terminal. Only ever seen when that rules field is set. |
 
 **Precedence, when more than one applies:** the execute boundary checks
 eligibility *first*, so a cancel on a hint book reports `book_not_schwab_read`
@@ -231,6 +231,14 @@ the HTTP status of each failed leg.
   it is**, in `config/outbox/`, to be re-gated next cycle.
 - **Raised an exception** → logged with the exception type and moved to
   `failed/`. The cycle continues to the next ticket and then to the protect lane.
+- **A broker call came back bad** → `post_failed`, `cancel_failed` and
+  `cancel_refused_400_after_hours` are **outcomes, not refusal reasons**, so they
+  never reach the WAIT/TERMINAL split at all: the ticket moves to `failed/`.
+  **This is a live edge of "wait, don't die" and it is deliberate.** A transient
+  broker 500 on a POST does kill the ticket, because a POST that may have
+  partially landed must never be retried by a daemon at 03:00 — quarantining it
+  for a human to read is the cheaper error. Re-approve by hand if the order did
+  not in fact reach Schwab.
 
 > ### Wait, don't die — the 2026-09-03 rule
 >
@@ -247,8 +255,17 @@ the HTTP status of each failed leg.
 > `book_not_schwab_read`, `equity_unknown_cannot_size`, `new_risk_blocked`.
 > Nothing about the ticket is wrong. It is well-formed, inside the universe and
 > inside every cap, and the only obstacle is the clock, the arm file, a degraded
-> broker read, or a daily box that resets. A later cycle can honestly find each
-> of these changed.
+> broker read, or the risk box. A later cycle can honestly find each of these
+> changed.
+>
+> **One caveat on `new_risk_blocked`, because "resets overnight" is true of only
+> one of its three clauses.** The day breaker is day-scoped; peak-drawdown is
+> not; and max-opens counts *distinct symbols* holding a position or a working
+> BUY entry, so the standing NVO and NOK protect-only positions occupy two slots
+> permanently. A ticket parked on max-opens or peak-DD waits **indefinitely**,
+> not until midnight, and only a human clearing a position or an order releases
+> it. Nothing posts while it waits, so the failure is safe — but if you are away
+> and want it bounded, that is what `expires_at` / `max_wait_days` are for.
 >
 > **TERMINAL — the ticket moves to `failed/` immediately, at 03:00 as at 10:00:**
 > everything else. Schema, a symbol outside the universe, a PROTECT_ONLY symbol,

@@ -82,9 +82,30 @@ WAIT_REFUSALS = frozenset(
 THE RULE: a refusal is a WAIT only when nothing about the ticket is wrong. The
 ticket is well-formed, inside the universe, inside every cap — and the only
 thing standing in its way is the clock, the session arm file, a degraded broker
-read, or a daily box that resets (breaker, peak-DD, max-opens). Every one of
-those is a property of the WORLD at this instant, not of the ticket, so a later
-cycle can legitimately find it changed.
+read, or the risk box. Every one of those is a property of the WORLD at this
+instant, not of the ticket, so a later cycle can legitimately find it changed.
+
+"THE RISK BOX RESETS DAILY" IS TRUE OF ONE OF ITS THREE CLAUSES, NOT THREE.
+Only the day breaker is day-scoped. peak-DD is (peak-equity)/peak, not a daily
+figure — inert on the real read path only because fetch_book stamps
+peak_equity = equity. max-opens is the sharp one: count_opens counts DISTINCT
+SYMBOLS holding a position with qty>0 or a working BUY entry, so the standing
+NVO and NOK protect-only positions permanently occupy 2 of the default
+max_opens 4, and nothing about a new day releases them.
+
+MEASURED, and narrower than it first looks, so do not over-cite it: with the
+live universe at two symbols (ETHA/IBIT), a ticket that REACHES the risk box
+has no position and no working entry of its own, which caps opens at 3
+(NVO, NOK, the other universe symbol) — under the default max_opens 4 the gate
+passes. Saturation needs a fourth distinct symbol in the account, or a tighter
+max_opens: an AAPL position alongside NVO/NOK/IBIT gives opens 4 >= 4 and
+`new_risk_blocked` on the default rules, and max_opens 3 blocks at opens 3.
+Both states persist across days, not until midnight.
+
+That is FAIL-SAFE — nothing posts, and a human clearing a position or an order
+releases it — but it is an INDEFINITE wait, not an overnight one, and nothing
+in the default config bounds it. `outbox.max_wait_days` is the bound, and it is
+absent by default, which is Anthony's call.
 
 A parked ticket is re-gated from scratch every cycle. It is never "half
 approved", it carries no permission forward, and it posts only when the full
@@ -118,12 +139,25 @@ TERMINAL_REFUSALS = frozenset(
 )
 """Refusals that QUARANTINE the ticket to config/outbox/failed/ immediately.
 
-THE RULE: the refusal names something about the ticket itself, or about a
-standing rule it violates, that no later cycle can change. Waiting on one of
-these is waiting forever, so it is refused at 03:00 exactly as it would be at
-10:00 — which is why the terminal checks that need no clock and no fresh quote
-run FIRST in gate_outbox_ticket. `unknown_action` reaches here inside
-`ticket_schema_invalid`, which carries it in `schema_errors`.
+THE RULE, STATED AS THE SAFETY BIAS IT IS RATHER THAN AS A FACT ABOUT TIME:
+the refusal names something about the ticket itself, or about a standing rule
+it violates, that a later cycle is not TRUSTED to have changed. It is refused
+at 03:00 exactly as it would be at 10:00 — which is why the terminal checks
+that need no clock and no fresh quote run FIRST in gate_outbox_ticket.
+`unknown_action` reaches here inside `ticket_schema_invalid`, which carries it
+in `schema_errors`.
+
+SIX OF THESE ARE NOT LITERALLY IMMUTABLE, and saying otherwise would teach the
+next reader to reclassify them: `existing_entry_in_book`,
+`one_sell_law_existing_sell`, `already_long_no_add` and
+`duplicate_working_order` all read book state that changes when an order fills
+or is canceled, and `qty_clipped_to_zero` / `ticket_notional_over_cap` are
+derived from equity, which moves. They are TERMINAL on purpose anyway: each
+says the ticket collides with a position or an order that already exists, or
+that the account cannot carry the size approved. Re-approving is a decision a
+human should make with fresh eyes, not something a daemon should retry into
+overnight. Killing a ticket that might later have passed costs one hand-moved
+file; a daemon quietly re-arming an idea nobody re-approved costs money.
 
 An unclassified reason is treated as TERMINAL (see refusal_is_wait): the
 pre-directive behaviour is the fail-closed one, because a reason nobody
@@ -1796,6 +1830,18 @@ def outbox_max_wait_days(rules: dict) -> tuple[float | None, str | None]:
     indefinitely and only `expires_at` or a human bounds it. A value that will
     not parse is reported as a problem and treated as absent — the failure mode
     of a bad config here is a ticket waiting, which posts nothing.
+
+    THAT PROMISE WAS ONCE FALSE FOR A LARGE VALUE, and the failure was the
+    dangerous direction: `max_wait_days: 1e12` (or a 999999999999 sentinel
+    meaning "never expire") parsed clean here, then overflowed
+    `timedelta`/`datetime` in the caller, and run_cycle caught the exception
+    into execute="exception" and quarantined the ticket to failed/. A config
+    saying "wait forever" killed every waiting ticket. The caller now measures
+    ELAPSED time instead of constructing a future timestamp, so no finite value
+    can overflow and a huge one means what a human reading it thinks it means.
+
+    A bool is rejected rather than accepted as 1.0: `max_wait_days: true` reads
+    as "enabled", and silently becoming a ONE-DAY limit kills tickets.
     """
     o = rules.get("outbox")
     if not isinstance(o, dict) or "max_wait_days" not in o:
@@ -1803,6 +1849,8 @@ def outbox_max_wait_days(rules: dict) -> tuple[float | None, str | None]:
     raw = o.get("max_wait_days")
     if raw is None:
         return None, None
+    if isinstance(raw, bool):
+        return None, f"max_wait_days_unparseable:{type(raw).__name__}"
     try:
         days = float(raw)
     except (TypeError, ValueError):
@@ -1853,7 +1901,16 @@ def ticket_wait_bounds_refusal(
             detail["max_wait_days_problem"] = problem
         if days is not None:
             detail["max_wait_days"] = days
-            if first_seen + timedelta(days=days) < t_now:
+            # Measured as ELAPSED, never as `first_seen + timedelta(days)`:
+            # that add raises OverflowError for any days past datetime.max
+            # (1e12 fails in timedelta, 999999999 fails in the add), run_cycle
+            # catches it into execute="exception", and the ticket is
+            # quarantined. A config meant to say "never expire" would kill
+            # exactly the tickets it meant to protect. This form is total over
+            # every finite value and keeps the same strict comparison.
+            elapsed_days = (t_now - first_seen).total_seconds() / 86400.0
+            detail["waited_days"] = round(elapsed_days, 4)
+            if elapsed_days > days:
                 detail["now"] = t_now.isoformat()
                 return "ticket_wait_exceeded", detail
 
@@ -1899,14 +1956,27 @@ def gate_outbox_ticket(
         03:00 on an overnight print, when the gate exists to say "the idea is
         dead in the session that is about to open", would be the wrong death.
 
-    ONE EXCEPTION TO "TERMINAL FIRST", STATED SO NOBODY READS THE LIST AS AN
-    ABSOLUTE: `orders_unproven` (a WAIT) runs ahead of the universe check (a
-    terminal that needs no book at all). During a Schwab outage a ticket for a
-    symbol the daemon may never trade therefore DEFERS instead of dying, and
-    only dies on the next healthy read. That is the cost of keeping the "no
-    book-derived gate is evaluated on a blind book" rule absolute, which is the
-    stronger safety property: the alternative is a gate order where some checks
-    read a book that has not proven itself.
+    TWO EXCEPTIONS TO "TERMINAL FIRST", STATED SO NOBODY READS THE LIST AS AN
+    ABSOLUTE. Both are WAITs sitting ahead of terminals, and both are
+    deliberate:
+
+      1. `orders_unproven` runs ahead of the universe check (a terminal that
+         needs no book at all). During a Schwab outage a ticket for a symbol
+         the daemon may never trade therefore DEFERS instead of dying, and only
+         dies on the next healthy read. That is the cost of keeping the "no
+         book-derived gate is evaluated on a blind book" rule absolute, which
+         is the stronger safety property: the alternative is a gate order where
+         some checks read a book that has not proven itself.
+      2. `equity_unknown_cannot_size` runs ahead of four terminals that read no
+         equity at all — `existing_entry_in_book`,
+         `one_sell_law_existing_sell`, `already_long_no_add` and
+         `duplicate_working_order`. So a ticket duplicating a working order
+         DEFERS rather than dies whenever equity is unreadable. Reachability is
+         low (an accounts-call failure aborts the whole read, which yields
+         `orders_unproven` first, exception 1). The four are NOT moved above
+         the equity gate: reordering gates on a live money wire to change the
+         disposition of a low-reachability edge is a worse trade than
+         documenting it, and deferring is the fail-safe direction anyway.
     """
     detail: dict = {}
 
@@ -2252,15 +2322,33 @@ def execute_outbox_ticket(
         return _refuse("ticket_unreadable")
     if not isinstance(rules, dict) or not rules:
         return _refuse("rules_missing")
-    if not isinstance(book, dict) or not book:
-        # WAIT: an absent book is a read that failed, not a bad ticket.
-        return _refuse("book_missing")
 
+    # Already sent is answered before anything about the world: the ticket is
+    # finished, and neither an absent book nor an elapsed deadline changes
+    # that. It moves to done/, which is where a sent ticket belongs.
     existing_oid = t.get("schwab_order_id")
     if existing_oid:
         out["execute"] = "skip_already_sent"
         out["existing_order_id"] = existing_oid
         return out
+
+    # The human's wait bounds run BEFORE the book check, not only inside
+    # gate_outbox_ticket. `book_missing` is a WAIT and returns above the gate,
+    # so a ticket whose expires_at passed in 2020 used to defer forever on an
+    # empty book — the deadline could never fire because nothing evaluated it.
+    # `book == {}` is not reachable from the daemon (resolve_book always
+    # substitutes a fallback book), so this closes a direct-call hole, not a
+    # live one. Cheap, and it keeps "the deadline always gets read" true
+    # without depending on which caller you came through.
+    bounds_reason, bounds = ticket_wait_bounds_refusal(t, rules, now)
+    if bounds:
+        out["gate"] = bounds
+    if bounds_reason is not None:
+        return _refuse(bounds_reason, bounds)
+
+    if not isinstance(book, dict) or not book:
+        # WAIT: an absent book is a read that failed, not a bad ticket.
+        return _refuse("book_missing")
 
     reason, detail = gate_outbox_ticket(t, rules, book, now)
     out["gate"] = detail
