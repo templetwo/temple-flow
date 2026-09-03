@@ -114,41 +114,70 @@ in place, waiting for a human.
 | `side` | string | no | defaults `BUY`; only `BUY` is accepted |
 | `stop_side` | string | no | defaults `SELL`; only `SELL` is accepted |
 | `order_id` | string or int | cancel | must match a **working** order in the book |
+| `expires_at` | ISO string | no | optional deadline. Past it the ticket dies (`ticket_expired`). Bare stamp = ET; an offset (`...+00:00`, `...Z`) is honoured. |
 | `schwab_order_id` | string | written by the daemon | its presence means "already sent, never resend" |
+| `first_seen_at` | ISO string | written by the daemon | stamped ET on the **first** deferral and never rewritten. The clock `outbox.max_wait_days` measures from. |
+| `deferrals` | integer | written by the daemon | rides along on that one write. `1` means "has been deferred at least once". |
+
+Optional rules field, read from `config/standing_rules.json`:
+
+| Field | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `outbox.max_wait_days` | number | **absent** | Absent means **no limit** — Anthony's call. Set it and a ticket that has waited more than N days from `first_seen_at` dies (`ticket_wait_exceeded`). A value that will not parse is treated as absent and reported in the log as `max_wait_days_problem`. |
 
 ### Guards every bracket ticket passes before a single byte is POSTed
 
 The outbox is not a side door around the standing rules. A ticket is held to the
-same gates a planned entry is:
+same gates a planned entry is. **The order below is the order the code runs, and
+since 2026-09-03 the order is load-bearing** — every terminal check that needs
+neither the clock nor a fresh quote runs first, so a ticket that can never pass
+dies at 03:00 instead of parking overnight to be killed at the open.
 
-1. **Schema** — every field type-checked before any value is used. No `float(None)`.
-2. **Universe** — `symbol` in ETHA / IBIT, never a PROTECT_ONLY leftover (NVO / NOK).
-3. **Armed** — `arm_required` honoured against the live session arm file.
-4. **RTH** — weekday 09:00–16:00 ET, same clock the planner uses.
-5. **Risk box** — day breaker, peak drawdown and max-opens all re-checked.
-6. **Risk clip** — `clip_qty` recomputed from live equity; a ticket asking for
-   more than the 2.5% clip allows is refused, not silently shrunk.
-7. **Notional cap** — `qty * limit` must be within `risk.max_ticket_notional_pct`
+1. **Wait bounds** — `expires_at` on the ticket, `outbox.max_wait_days` in the
+   rules. Ahead of everything, including schema. Both **terminal**.
+2. **Schema** — every field type-checked before any value is used. No `float(None)`.
+3. **Read coverage: orders leg** — `orders_ok` must be proven. Every book-derived
+   guard below is blind without it. **Waits.** This is the one place a waiting
+   guard sits ahead of a terminal one: during a Schwab outage even a ticket for
+   a symbol the daemon may never trade defers, and dies on the next healthy
+   read. The alternative would be evaluating gates against a book that has not
+   proven itself, which is the fail-open this guard exists to close.
+4. **Universe** — `symbol` in ETHA / IBIT, never a PROTECT_ONLY leftover (NVO / NOK).
+5. **No chase through cap, `limit` half** — `limit` at or under `entries[sym].cap`.
+   Needs no quote, so it is checked here. The 2026-08-28 law is an idea-level
+   threshold ("through cap = idea dead"), so it binds a human-approved ticket
+   exactly as it binds the planner's own lane.
+6. **Equity known** — live equity from the book. Both caps below need it, so an
+   equity the daemon could not read **waits** rather than killing the ticket.
+7. **Risk clip** — `clip_qty` recomputed from live equity; a ticket asking for
+   more than the 2.5% clip allows is refused, not silently shrunk. Checked
+   **before** the notional cap so an oversized ticket names the size law it
+   broke rather than the buying-power one.
+8. **Notional cap** — `qty * limit` must be within `risk.max_ticket_notional_pct`
    of live equity (default 0.35). This is a *different* cap from `risk_pct`:
    14 ETHA passes the $14.92 risk clip while costing $261.80 of buying power.
-8. **Book** — refused if an entry, any working SELL (one-sell law), or a position
+9. **Book** — refused if an entry, any working SELL (one-sell law), or a position
    already exists on that symbol, or if a working order already matches
    symbol+side+qty+limit (duplicate).
-9. **Cancel tickets** — the `order_id` must be a working order in the book, on a
-   live-universe symbol, and the DELETE only fires inside RTH.
-10. **In-cycle bookkeeping** — the book is fetched once per cycle, so a placed
+10. **Risk box** — day breaker, peak drawdown and max-opens all re-checked.
+    A tripped box is a state of the day and the day turns over, so it **waits**.
+11. **Armed** — `arm_required` honoured against the live session arm file. **Waits.**
+12. **RTH** — weekday 09:00–16:00 ET, same clock the planner uses. **Waits.**
+13. **No chase through cap, `last` half** — if quotes are proven, `last` must be
+    at or under the cap too. Terminal, but evaluated **last** because it is the
+    one terminal check that reads a live quote: killing a ticket at 03:00 on an
+    overnight print is the wrong death for a gate that means "the idea is dead
+    in the session about to open".
+14. **In-cycle bookkeeping** — the book is fetched once per cycle, so a placed
     order is recorded into the in-memory book immediately. Two approved tickets
     for the same symbol in one cycle result in one order: the second sees the
-    first and is refused. Without this, guards 8 and the `max_opens` box would
+    first and is refused. Without this, guard 9 and the `max_opens` box would
     be blind precisely when two tickets arrive together. A **cancel** is
     recorded the same way, so the planner cannot re-fire a DELETE on an order
     the outbox just canceled in the same tick.
-11. **No chase through cap** — `limit` must be at or under `entries[sym].cap`,
-    and if quotes are proven, `last` must be too. The 2026-08-28 law is an
-    idea-level threshold ("through cap = idea dead"), so it binds a
-    human-approved ticket exactly as it binds the planner's own lane.
-12. **Read coverage** — see below. Every guard from 5 to 11 is book-derived, so
-    a ticket is refused outright when the leg it depends on is unproven.
+15. **Cancel tickets** — same shape, terminal first: the `order_id` must be a
+    working order in the book (terminal), on a live-universe symbol (terminal),
+    and the DELETE only fires inside RTH (**waits**).
 
 ### A degraded broker read refuses; it does not proceed on an empty book
 
@@ -164,12 +193,14 @@ treated as unproven.
 |---|---|
 | `protect_blocked_orders_unproven` | Orders leg failed. The protect lane will not post a stop it cannot prove is not a duplicate — that duplicate is the second SELL Schwab rejected on 2026-08-30. |
 | `orders_unproven` / `quotes_unproven` (inside `new_risk_blocked`) | No new entry. Blind quotes are the fail-open direction: `last_above_hold_reclaim` and `through_cap_idea_dead` only fire when `last` is known, so a blind read would let the entry through. |
-| `orders_unproven` (outbox ticket) | The ticket is refused before the duplicate / one-sell / max-opens checks, which a blind book would all pass. |
+| `orders_unproven` (outbox ticket) | The ticket is held before the duplicate / one-sell / max-opens checks, which a blind book would all pass. **This one WAITS** — a failed read says nothing about the ticket, so it is re-gated when Schwab answers again. |
 | `cancel_lane_orders_unproven` | Informational. An unproven orders leg yields an empty list, so the cancel lane plans nothing and no DELETE is emitted. Logged so "did nothing" and "could not see" are never confused. |
-| `book_not_schwab_read` / `book_missing` | The execute boundary refused: only a proven Schwab read may drive a live POST or DELETE. A hint book can never reach the wire. |
+| `book_not_schwab_read` / `book_missing` | The execute boundary held: only a proven Schwab read may drive a live POST or DELETE. A hint book can never reach the wire. **For an outbox ticket these WAIT**; for a planned action they refuse, because a planned action is re-derived from scratch next cycle anyway. |
 | `protect_stop_at_or_above_last_would_market_sell` | The configured stop is at or above the last trade. That is not protection, it is a market SELL on the next open. |
 | `ticket_limit_above_cap` / `through_cap_idea_dead` (outbox) | Guard 11 above. |
 | `cancel_symbol_not_in_live_universe` (at execute) | Boundary copy of the planner's universe restriction. |
+| `ticket_expired` | The ticket's own `expires_at` has passed. Terminal. |
+| `ticket_wait_exceeded` | `first_seen_at` + `outbox.max_wait_days` is behind us. Terminal. Only ever seen when that rules field is set. |
 
 **Precedence, when more than one applies:** the execute boundary checks
 eligibility *first*, so a cancel on a hint book reports `book_not_schwab_read`
@@ -195,25 +226,59 @@ the HTTP status of each failed leg.
   *before* the file is moved, then the ticket moves to `done/`. If the move ever
   fails, the ticket still carries `schwab_order_id`, so the next cycle skips it
   instead of sending a duplicate.
-- **Refused, for any reason** → logged with its reason and moved to `failed/`.
+- **Refused TERMINALLY** → logged with its reason and moved to `failed/`.
+- **Deferred (a WAIT refusal)** → logged with its reason and **left exactly where
+  it is**, in `config/outbox/`, to be re-gated next cycle.
 - **Raised an exception** → logged with the exception type and moved to
   `failed/`. The cycle continues to the next ticket and then to the protect lane.
 
-> **Refusal is terminal, including for timing.** A ticket refused because it was
-> outside RTH, or because the session was not armed, is quarantined to `failed/`
-> the same as a malformed one. It is **not** parked and retried when the market
-> opens. This is deliberate — a ticket that sits in the outbox retrying itself is
-> a standing order nobody re-approved — but it means **a ticket dropped in
-> overnight will be dead by morning.** Move it back out of `failed/` and re-approve
-> it when you are at the glass.
+> ### Wait, don't die — the 2026-09-03 rule
 >
-> **OPEN QUESTION, for Anthony, not for a seat to decide.** The read-coverage
-> refusals below make this cost bigger: a Schwab hiccup now quarantines tickets
-> that were never wrong, only unproven. A third outcome — `deferred/`, left in
-> the outbox for refusals that are purely about timing or coverage — would fix
-> it. It is deliberately **not built here**: it is a new state machine on a live
-> wire, and "retry it later automatically" is exactly the property the terminal
-> rule was chosen to avoid. Decide the policy first.
+> **Anthony, 2026-09-03 07:49 EDT:** *"They should wait not die. Execution should
+> start back up when the markets open."*
+>
+> Before that directive every refusal was terminal, including timing: a ticket
+> approved at 22:00 was in `failed/` by the first overnight tick and there was
+> nothing left for 09:30 to run. Now a refusal has two dispositions, and which
+> one it gets is a property of **why** it was refused, not of when.
+>
+> **WAIT — the ticket stays in `config/outbox/` and is re-gated next cycle:**
+> `outside_rth`, `arm_required`, `orders_unproven`, `book_missing`,
+> `book_not_schwab_read`, `equity_unknown_cannot_size`, `new_risk_blocked`.
+> Nothing about the ticket is wrong. It is well-formed, inside the universe and
+> inside every cap, and the only obstacle is the clock, the arm file, a degraded
+> broker read, or a daily box that resets. A later cycle can honestly find each
+> of these changed.
+>
+> **TERMINAL — the ticket moves to `failed/` immediately, at 03:00 as at 10:00:**
+> everything else. Schema, a symbol outside the universe, a PROTECT_ONLY symbol,
+> `limit` above cap, `through_cap_idea_dead`, a qty clipped to zero or over the
+> risk clip, notional over cap or uncomputable, an existing entry, the one-sell
+> law, already long, a duplicate, a cancel target that is not working, a cancel
+> on a symbol outside the universe, `cancel_skipped_refused_today`,
+> `rules_missing`, `ticket_unreadable`, an unknown action. Waiting on any of
+> these is waiting forever.
+>
+> **A waiting ticket carries no permission forward.** It is re-gated from scratch
+> every cycle against a fresh book. If the world changed while it waited — a
+> working entry appeared, the breaker tripped, `last` ran through the cap — it is
+> refused on that, not posted because it was approved last night.
+>
+> **Nothing special happens at the open.** There is no resume path and no retry
+> queue. The 09:45 cycle runs the same gate list the 03:00 cycle ran; the ticket
+> simply still exists to be gated.
+>
+> **Two ways to bound the waiting**, both optional and both the human's:
+> `"expires_at": "2026-09-05T16:00:00"` on the ticket, and
+> `"outbox": {"max_wait_days": 3}` in `config/standing_rules.json`. Absent by
+> default: with neither set, a deferred ticket waits indefinitely, which is
+> Anthony's stated default. `max_wait_days` counts from `first_seen_at`, which the
+> daemon stamps into the ticket file on the first deferral and **never rewrites**
+> — a stamp refreshed each cycle would make the bound unfireable.
+>
+> **To stop a waiting ticket by hand:** move it out of `config/outbox/`, or add
+> an `expires_at` in the past. Deleting it works too; the daemon holds no state
+> about it anywhere else.
 
 Example ticket (live-universe symbol, inside the caps):
 
@@ -240,6 +305,8 @@ Example ticket (live-universe symbol, inside the caps):
   Cancels are restricted to the live universe, fire only inside RTH, and a
   Schwab 400 is remembered in `config/cancel_refusals.json` so the same order is
   not re-DELETEd every tick — one attempt per trading day.
-- Process outbox tickets under the guards above.
+- Process outbox tickets under the guards above. A ticket refused for a timing
+  or transient-state reason **stays in `config/outbox/`** and is re-gated every
+  900s until it posts, dies on a terminal gate, or hits a bound you set.
 - Print JSON lines. `sent` means an order was **placed**; a cancel reports
   `execute: "canceled"` with `mutated: true` and leaves `sent` false.

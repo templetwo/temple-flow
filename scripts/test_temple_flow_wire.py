@@ -10,6 +10,7 @@ Two standing rules for this file, both earned:
 """
 from __future__ import annotations
 
+import ast
 import contextlib
 import json
 import os
@@ -667,7 +668,12 @@ class TestOutboxGates(unittest.TestCase):
         self.assertEqual(reason, "outside_rth")
 
     def test_refuses_when_risk_box_trips(self):
-        book = base_book(equity=500.0, sod_equity=596.86, day_pnl=-96.86)
+        # equity is held at the fixture value ON PURPOSE. The risk box is a
+        # WAIT gate and now runs AFTER the terminal caps, so a fixture that
+        # also broke the notional cap (the old equity=500 one did: 11 * 18.70 =
+        # $205.70 against 35% of $500 = $175) would report the cap and never
+        # reach the box. Day breaker only: -103.14 on a $700 open is past 4.5%.
+        book = base_book(equity=596.86, sod_equity=700.0, day_pnl=-103.14)
         reason, detail = self._gate(ticket(), book=book)
         self.assertEqual(reason, "new_risk_blocked")
         self.assertTrue(detail["risk_box"])
@@ -867,19 +873,26 @@ class TestOutboxExecution(unittest.TestCase):
         self.assertIs(out["sent"], False)
 
     def test_missing_rules_or_book_refuses(self):
+        """The two dispose differently, and that split is the point.
+
+        No rules means the daemon cannot know what it is allowed to do — that
+        never gets better by waiting, so it is TERMINAL. No book means the read
+        failed — that is transient, so it WAITS.
+        """
         with no_network():
-            self.assertEqual(
-                execute_outbox_ticket(
-                    {"ticket": ticket()}, live=True, rules={}, book=base_book()
-                )["reason"],
-                "rules_missing",
+            no_rules = execute_outbox_ticket(
+                {"ticket": ticket()}, live=True, rules={}, book=base_book()
             )
-            self.assertEqual(
-                execute_outbox_ticket(
-                    {"ticket": ticket()}, live=True, rules=example_rules(), book={}
-                )["reason"],
-                "book_missing",
+            no_book = execute_outbox_ticket(
+                {"ticket": ticket()}, live=True, rules=example_rules(), book={}
             )
+        self.assertEqual(no_rules["reason"], "rules_missing")
+        self.assertEqual(no_rules["execute"], "refused")
+        self.assertEqual(no_book["reason"], "book_missing")
+        self.assertEqual(no_book["execute"], "deferred")
+        for out in (no_rules, no_book):
+            self.assertIs(out["sent"], False)
+            self.assertIs(out["mutated"], False)
 
     def test_live_post_uses_gated_values(self):
         captured = {}
@@ -1243,8 +1256,14 @@ class TestHintBookAnswersNoGate(unittest.TestCase):
                 out = execute_outbox_ticket(
                     {"ticket": ticket(qty=5)}, live=True, rules=rules, book=book
                 )
-        self.assertEqual(out["execute"], "refused")
+        # Both of these are WAIT reasons since 2026-09-03: a hint book means
+        # the READ failed, which says nothing about the ticket. It defers and
+        # is re-gated when the broker answers again. What must never change is
+        # that no byte reaches the wire — no_network() above is the proof.
+        self.assertEqual(out["execute"], "deferred")
         self.assertIn(out["reason"], ("orders_unproven", "book_not_schwab_read"))
+        self.assertIs(out["sent"], False)
+        self.assertIs(out["mutated"], False)
 
 
 class TestPartialBrokerReadFailsClosed(unittest.TestCase):
@@ -1500,6 +1519,629 @@ class TestExecuteBoundaryDefenses(unittest.TestCase):
             any(a.get("reason") == "entry_disabled" for a in out),
             "actions behind the exception must still be executed",
         )
+
+
+class TestRefusalClassificationIsComplete(unittest.TestCase):
+    """No refusal reason may exist without a disposition.
+
+    An unclassified reason is not a neutral gap. refusal_is_wait() fails closed,
+    so an unclassified reason quarantines — which for a timing refusal is the
+    exact bug Anthony ordered fixed, silently reintroduced by whoever adds the
+    next gate. This test is the tripwire: add a reason, classify it or fail.
+    """
+
+    #: Every function that may name a refusal reason. The guard test below
+    #: proves this list is not silently outgrown.
+    SCANNED = (
+        "gate_outbox_ticket",
+        "ticket_wait_bounds_refusal",
+        "book_is_live_eligible",
+        "execute_outbox_ticket",
+    )
+    #: Strings that reach out["reason"] without being refusals.
+    NOT_REFUSALS = frozenset({"gates_passed_would_post"})
+
+    @staticmethod
+    def _module_tree() -> ast.Module:
+        return ast.parse(Path(temple_flow_wire.__file__).read_text())
+
+    @classmethod
+    def _func(cls, tree: ast.Module, name: str) -> ast.FunctionDef:
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == name:
+                return node
+        raise AssertionError(f"{name} not found in temple_flow_wire")
+
+    @classmethod
+    def _reasons_in(cls, tree: ast.Module, name: str) -> set:
+        """String literals this function can hand back as a refusal reason.
+
+        Two shapes, because the wire uses two: `return "<reason>", detail`
+        (and book_is_live_eligible's `return False, "<reason>"`), and
+        `out["reason"] = "<reason>"`. Reads the file rather than the imported
+        object so indentation and decorators cannot skew it.
+        """
+        found = set()
+        for node in ast.walk(cls._func(tree, name)):
+            if isinstance(node, ast.Return) and isinstance(node.value, ast.Tuple):
+                for elt in node.value.elts:
+                    if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                        if elt.value:
+                            found.add(elt.value)
+            if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant):
+                if not isinstance(node.value.value, str):
+                    continue
+                for tgt in node.targets:
+                    if (
+                        isinstance(tgt, ast.Subscript)
+                        and isinstance(tgt.slice, ast.Constant)
+                        and tgt.slice.value == "reason"
+                    ):
+                        found.add(node.value.value)
+        return found
+
+    def test_every_reason_is_in_exactly_one_set(self):
+        tree = self._module_tree()
+        reasons = set()
+        for name in self.SCANNED:
+            reasons |= self._reasons_in(tree, name)
+        reasons -= self.NOT_REFUSALS
+        self.assertTrue(reasons, "the scan found nothing; the extractor is broken")
+        for reason in sorted(reasons):
+            in_wait = reason in temple_flow_wire.WAIT_REFUSALS
+            in_terminal = reason in temple_flow_wire.TERMINAL_REFUSALS
+            self.assertTrue(
+                in_wait or in_terminal,
+                f"refusal reason {reason!r} is in neither WAIT_REFUSALS nor "
+                f"TERMINAL_REFUSALS. Classify it: does a later cycle stand any "
+                f"chance of finding it changed?",
+            )
+            self.assertFalse(
+                in_wait and in_terminal,
+                f"refusal reason {reason!r} is in BOTH sets",
+            )
+
+    def test_the_two_sets_are_disjoint_and_the_helper_fails_closed(self):
+        self.assertEqual(
+            temple_flow_wire.WAIT_REFUSALS & temple_flow_wire.TERMINAL_REFUSALS,
+            frozenset(),
+        )
+        for reason in temple_flow_wire.WAIT_REFUSALS:
+            self.assertTrue(temple_flow_wire.refusal_is_wait(reason))
+        for reason in temple_flow_wire.TERMINAL_REFUSALS:
+            self.assertFalse(temple_flow_wire.refusal_is_wait(reason))
+        # an unclassified reason quarantines — the pre-2026-09-03 behaviour
+        self.assertFalse(temple_flow_wire.refusal_is_wait("a_reason_invented_later"))
+        self.assertFalse(temple_flow_wire.refusal_is_wait(None))
+
+    def test_no_unscanned_function_hands_back_a_reason(self):
+        """Guard on SCANNED itself.
+
+        A new helper that returns ("some_reason", detail) and is called from
+        gate_outbox_ticket would be invisible to the scan above — the reason
+        would ship unclassified and the completeness test would still pass.
+        """
+        tree = self._module_tree()
+        returners = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            for sub in ast.walk(node):
+                if (
+                    isinstance(sub, ast.Return)
+                    and isinstance(sub.value, ast.Tuple)
+                    and sub.value.elts
+                    and isinstance(sub.value.elts[0], ast.Constant)
+                    and isinstance(sub.value.elts[0].value, str)
+                    and sub.value.elts[0].value
+                ):
+                    returners.add(node.name)
+        self.assertLessEqual(
+            returners,
+            set(self.SCANNED),
+            "a function outside SCANNED now returns a reason literal; add it "
+            "to SCANNED so its reasons are classified",
+        )
+
+
+class TestWaitNotDie(unittest.TestCase):
+    """Anthony, 2026-09-03 07:49 EDT: 'They should wait not die. Execution
+    should start back up when the markets open.'
+
+    Before this, a ticket refused for `outside_rth` or `arm_required` was
+    quarantined to failed/ exactly like a malformed one, so a ticket approved
+    the night before was dead by morning for the offence of having been written
+    while the market was shut.
+    """
+
+    ET = temple_flow_wire.ET
+
+    def at(self, hour: int, minute: int = 0, day: int = 3) -> datetime:
+        """A wall clock in ET. 2026-09-03 is a Thursday, so RTH applies."""
+        return datetime(2026, 9, day, hour, minute, tzinfo=self.ET)
+
+    def _write(self, root: Path, t: dict) -> Path:
+        outbox = root / "config" / "outbox"
+        outbox.mkdir(parents=True, exist_ok=True)
+        p = outbox / f"{t.get('id') or 'TF'}.json"
+        p.write_text(json.dumps(t))
+        return p
+
+    @staticmethod
+    def _ticket_lines(out: list) -> list:
+        return [a for a in out if a.get("op") == "outbox_ticket"]
+
+    # --- terminal refusals still die immediately, even at 3 am -------------
+
+    def test_terminal_refusal_quarantines_at_three_am(self):
+        """FAILS ON 7d2d5c2 on the REASON, not on the move.
+
+        Pre-change every refusal quarantined, so the file lands in failed/
+        either way. What pre-change gets wrong is WHICH gate answered: with
+        arm and RTH ahead of the caps, an oversized ticket at 03:00 reports
+        `arm_required` — a WAIT reason under the new rule — and would have sat
+        in the outbox all night for a ticket that can never pass. The reorder
+        is what makes it report the size law it actually broke.
+        """
+        night = base_book(in_rth=False, armed=False)
+        with tempfile.TemporaryDirectory() as tmpdir, no_network():
+            root = Path(tmpdir)
+            p = self._write(root, ticket(id="TF-FAT", qty=20))
+            out = run_cycle(
+                example_rules(),
+                night,
+                live=True,
+                broker_note="test",
+                repo_root=root,
+                now=self.at(3),
+            )
+            line = self._ticket_lines(out)[0]
+            self.assertEqual(line["reason"], "ticket_qty_exceeds_risk_clip")
+            self.assertEqual(line["execute"], "refused")
+            self.assertFalse(p.exists())
+            self.assertTrue((root / "config" / "outbox" / "failed" / p.name).exists())
+
+    def test_wrong_symbol_at_three_am_still_dies(self):
+        """Regression guard, and honest about it: this passes on 7d2d5c2 too.
+
+        The universe check already ran ahead of arm/RTH, so SOFI quarantined at
+        03:00 before the change. It is here because the reorder moved code
+        around it and a silent inversion would be catastrophic: a ticket for a
+        symbol the daemon may not trade must never be parked to be retried.
+        """
+        night = base_book(in_rth=False, armed=False)
+        with tempfile.TemporaryDirectory() as tmpdir, no_network():
+            root = Path(tmpdir)
+            p = self._write(
+                root, ticket(id="TF-SOFI", symbol="SOFI", limit=8.5, stop=8.2, qty=10)
+            )
+            out = run_cycle(
+                example_rules(),
+                night,
+                live=True,
+                broker_note="test",
+                repo_root=root,
+                now=self.at(3),
+            )
+            line = self._ticket_lines(out)[0]
+            self.assertEqual(line["reason"], "not_in_live_universe")
+            self.assertEqual(line["execute"], "refused")
+            self.assertFalse(p.exists())
+            self.assertTrue((root / "config" / "outbox" / "failed" / p.name).exists())
+
+    def test_a_blind_read_defers_even_a_symbol_that_can_never_trade(self):
+        """The one place a WAIT legitimately precedes a terminal check.
+
+        `orders_unproven` runs ahead of the universe check, so during a Schwab
+        outage a SOFI ticket defers instead of dying, and dies on the next
+        healthy read. Pinned because it looks like a bug until you see why: no
+        book-derived gate may run on a book that has not proven itself, and
+        holding that rule absolute is worth one delayed death.
+        """
+        blind = base_book(in_rth=False, armed=False, orders_ok=False)
+        sofi = ticket(id="TF-SOFI", symbol="SOFI", limit=8.5, stop=8.2, qty=10)
+        self.assertEqual(
+            gate_outbox_ticket(sofi, example_rules(), blind, now=self.at(3))[0],
+            "orders_unproven",
+        )
+        self.assertEqual(
+            gate_outbox_ticket(
+                sofi, example_rules(), base_book(in_rth=False, armed=False),
+                now=self.at(3),
+            )[0],
+            "not_in_live_universe",
+        )
+
+    # --- wait refusals keep the file --------------------------------------
+
+    def test_wait_refusal_keeps_the_file_and_stamps_first_seen_once(self):
+        """FAILS ON 7d2d5c2 at the first assertion: p.exists().
+
+        Pre-change `arm_required` quarantines to failed/, so the file is gone
+        after cycle one and there is no first_seen_at anywhere.
+        """
+        night = base_book(in_rth=False, armed=False)
+        with tempfile.TemporaryDirectory() as tmpdir, no_network():
+            root = Path(tmpdir)
+            p = self._write(root, ticket(qty=11))
+            out1 = run_cycle(
+                example_rules(),
+                night,
+                live=True,
+                broker_note="test",
+                repo_root=root,
+                now=self.at(3),
+            )
+            line1 = self._ticket_lines(out1)[0]
+            self.assertEqual(line1["execute"], "deferred")
+            self.assertEqual(line1["reason"], "arm_required")
+            self.assertIs(line1["sent"], False)
+            self.assertIs(line1["mutated"], False)
+            self.assertEqual(line1["deferrals"], 1)
+            self.assertTrue(line1["stamped_first_seen"])
+            self.assertTrue(p.exists(), "a waiting ticket must stay in the outbox")
+            self.assertFalse((root / "config" / "outbox" / "failed").exists())
+
+            stamped_once = json.loads(p.read_text())["first_seen_at"]
+            self.assertTrue(stamped_once)
+
+            # a second deferral, an hour later: the stamp is NOT refreshed, or
+            # max_wait_days could never fire
+            out2 = run_cycle(
+                example_rules(),
+                night,
+                live=True,
+                broker_note="test",
+                repo_root=root,
+                now=self.at(4),
+            )
+            line2 = self._ticket_lines(out2)[0]
+            self.assertEqual(line2["execute"], "deferred")
+            self.assertNotIn("stamped_first_seen", line2)
+            self.assertEqual(line2["deferrals"], 2)
+            self.assertEqual(json.loads(p.read_text())["first_seen_at"], stamped_once)
+
+    def test_dry_run_defers_without_touching_the_ticket(self):
+        """A hand-run dry cycle must not start the max_wait clock."""
+        night = base_book(in_rth=False, armed=False)
+        with tempfile.TemporaryDirectory() as tmpdir, no_network():
+            root = Path(tmpdir)
+            p = self._write(root, ticket(qty=11))
+            before = p.read_text()
+            out = run_cycle(
+                example_rules(),
+                night,
+                live=False,
+                broker_note="test",
+                repo_root=root,
+                now=self.at(3),
+            )
+            line = self._ticket_lines(out)[0]
+            self.assertEqual(line["execute"], "deferred")
+            self.assertEqual(line["reason"], "arm_required")
+            self.assertNotIn("stamped_first_seen", line)
+            self.assertTrue(p.exists())
+            self.assertEqual(p.read_text(), before)
+
+    def test_cancel_outside_rth_waits(self):
+        """FAILS ON 7d2d5c2 at p.exists(): the cancel ticket was quarantined.
+
+        The DELETE is held outside RTH because Schwab 400s it after hours. That
+        is a clock refusal like any other, so the ticket waits for the open.
+        """
+        book = base_book(
+            in_rth=False,
+            armed=False,
+            orders=[
+                {
+                    "id": 12345,
+                    "symbol": "ETHA",
+                    "side": "BUY",
+                    "status": "WORKING",
+                    "type": "LIMIT",
+                    "price": 18.75,
+                    "qty": 1,
+                    "remaining": 1,
+                }
+            ],
+        )
+        with tempfile.TemporaryDirectory() as tmpdir, no_network():
+            root = Path(tmpdir)
+            p = self._write(
+                root, ticket(id="TF-CANCEL", action="cancel_by_id", order_id=12345)
+            )
+            out = run_cycle(
+                example_rules(),
+                book,
+                live=True,
+                broker_note="test",
+                repo_root=root,
+                now=self.at(3),
+            )
+            line = self._ticket_lines(out)[0]
+            self.assertEqual(line["execute"], "deferred")
+            self.assertEqual(line["reason"], "outside_rth")
+            self.assertIs(line["mutated"], False)
+            self.assertTrue(p.exists())
+
+    def test_a_cancel_that_can_never_work_still_dies_at_three_am(self):
+        """The terminal half of the cancel lane, at the same hour."""
+        with tempfile.TemporaryDirectory() as tmpdir, no_network():
+            root = Path(tmpdir)
+            p = self._write(
+                root, ticket(id="TF-GHOST", action="cancel_by_id", order_id="404404")
+            )
+            out = run_cycle(
+                example_rules(),
+                base_book(in_rth=False, armed=False),
+                live=True,
+                broker_note="test",
+                repo_root=root,
+                now=self.at(3),
+            )
+            line = self._ticket_lines(out)[0]
+            self.assertEqual(line["reason"], "cancel_order_id_not_working_in_book")
+            self.assertEqual(line["execute"], "refused")
+            self.assertTrue((root / "config" / "outbox" / "failed" / p.name).exists())
+
+    # --- bounded waiting ---------------------------------------------------
+
+    def test_expires_at_is_terminal(self):
+        """FAILS ON 7d2d5c2: expires_at is not read at all there, so the ticket
+        reports arm_required instead of ticket_expired."""
+        night = base_book(in_rth=False, armed=False)
+        with tempfile.TemporaryDirectory() as tmpdir, no_network():
+            root = Path(tmpdir)
+            p = self._write(
+                root, ticket(id="TF-EXP", qty=11, expires_at="2026-09-02T16:00:00")
+            )
+            out = run_cycle(
+                example_rules(),
+                night,
+                live=True,
+                broker_note="test",
+                repo_root=root,
+                now=self.at(3),
+            )
+            line = self._ticket_lines(out)[0]
+            self.assertEqual(line["reason"], "ticket_expired")
+            self.assertEqual(line["execute"], "refused")
+            self.assertFalse(p.exists())
+            self.assertTrue((root / "config" / "outbox" / "failed" / p.name).exists())
+
+    def test_expires_at_in_the_future_does_not_bite(self):
+        reason, detail = gate_outbox_ticket(
+            ticket(qty=11, expires_at="2026-09-30T16:00:00"),
+            example_rules(),
+            base_book(),
+            now=self.at(10),
+        )
+        self.assertIsNone(reason, detail)
+
+    def test_expires_at_honours_an_offset(self):
+        # 2026-09-03T08:00:00+00:00 is 04:00 ET, so a 10:00 ET clock is past it
+        reason, _ = gate_outbox_ticket(
+            ticket(qty=11, expires_at="2026-09-03T08:00:00+00:00"),
+            example_rules(),
+            base_book(),
+            now=self.at(10),
+        )
+        self.assertEqual(reason, "ticket_expired")
+
+    def test_unparseable_expires_at_is_a_schema_error_not_a_free_pass(self):
+        reason, detail = gate_outbox_ticket(
+            ticket(qty=11, expires_at="tomorrow-ish"),
+            example_rules(),
+            base_book(),
+            now=self.at(10),
+        )
+        self.assertEqual(reason, "ticket_schema_invalid")
+        self.assertIn("expires_at_not_iso", detail["schema_errors"])
+
+    def test_max_wait_days_is_terminal(self):
+        """FAILS ON 7d2d5c2: no outbox.max_wait_days rule exists there."""
+        rules = example_rules()
+        rules["outbox"] = {"max_wait_days": 2}
+        night = base_book(in_rth=False, armed=False)
+        with tempfile.TemporaryDirectory() as tmpdir, no_network():
+            root = Path(tmpdir)
+            p = self._write(
+                root,
+                ticket(
+                    id="TF-OLD",
+                    qty=11,
+                    first_seen_at="2026-08-29T03:00:00",
+                    deferrals=97,
+                ),
+            )
+            out = run_cycle(
+                rules,
+                night,
+                live=True,
+                broker_note="test",
+                repo_root=root,
+                now=self.at(3),
+            )
+            line = self._ticket_lines(out)[0]
+            self.assertEqual(line["reason"], "ticket_wait_exceeded")
+            self.assertEqual(line["execute"], "refused")
+            self.assertFalse(p.exists())
+            self.assertTrue((root / "config" / "outbox" / "failed" / p.name).exists())
+
+    def test_max_wait_days_absent_means_no_limit(self):
+        """Anthony's default. A ticket stamped a year ago still only waits."""
+        reason, _ = gate_outbox_ticket(
+            ticket(qty=11, first_seen_at="2025-09-03T03:00:00"),
+            example_rules(),
+            base_book(in_rth=False, armed=False),
+            now=self.at(3),
+        )
+        self.assertEqual(reason, "arm_required")
+
+    def test_max_wait_days_inside_the_window_still_waits(self):
+        rules = example_rules()
+        rules["outbox"] = {"max_wait_days": 7}
+        reason, _ = gate_outbox_ticket(
+            ticket(qty=11, first_seen_at="2026-09-02T22:00:00"),
+            rules,
+            base_book(in_rth=False, armed=False),
+            now=self.at(3),
+        )
+        self.assertEqual(reason, "arm_required")
+
+    def test_a_garbled_max_wait_days_does_not_kill_tickets(self):
+        rules = example_rules()
+        rules["outbox"] = {"max_wait_days": "soon"}
+        days, problem = temple_flow_wire.outbox_max_wait_days(rules)
+        self.assertIsNone(days)
+        self.assertTrue(problem)
+        reason, detail = gate_outbox_ticket(
+            ticket(qty=11, first_seen_at="2025-01-01T03:00:00"),
+            rules,
+            base_book(in_rth=False, armed=False),
+            now=self.at(3),
+        )
+        self.assertEqual(reason, "arm_required")
+        self.assertIn("max_wait_days_problem", detail)
+
+    def test_a_corrupt_first_seen_at_does_not_restart_the_clock(self):
+        rules = example_rules()
+        rules["outbox"] = {"max_wait_days": 1}
+        reason, detail = gate_outbox_ticket(
+            ticket(qty=11, first_seen_at="not-a-date"),
+            rules,
+            base_book(),
+            now=self.at(10),
+        )
+        self.assertEqual(reason, "ticket_schema_invalid")
+        self.assertIn("first_seen_at_not_iso", detail["schema_errors"])
+
+    # --- the whole point: it comes back at the open ------------------------
+
+    def test_three_cycles_deferred_deferred_then_posted_at_the_open(self):
+        """FAILS ON 7d2d5c2 at the first p.exists(): the 03:00 cycle moves the
+        ticket to failed/, and there is nothing left for 09:00 or 10:00 to run.
+
+        No resume path is written anywhere. The ticket simply survives, and the
+        10:00 cycle gates it from scratch like any other.
+        """
+        posted = []
+
+        def mock_place(**kw):
+            posted.append(kw)
+            return {"http": 201, "order_id": "1007762031724", "error": ""}
+
+        rules = example_rules()
+        with tempfile.TemporaryDirectory() as tmpdir, recording_broker(), patched(
+            "place_gtc_bracket", mock_place
+        ):
+            root = Path(tmpdir)
+            p = self._write(root, ticket(qty=11))
+
+            # 03:00 — closed, not armed
+            out = run_cycle(
+                rules,
+                base_book(in_rth=False, armed=False),
+                live=True,
+                broker_note="test",
+                repo_root=root,
+                now=self.at(3),
+            )
+            self.assertEqual(self._ticket_lines(out)[0]["execute"], "deferred")
+            self.assertTrue(p.exists())
+            self.assertEqual(posted, [])
+            first_seen = json.loads(p.read_text())["first_seen_at"]
+
+            # 09:00 — still pre-open (RTH starts at 09:00 by the wire's clock,
+            # but the session is not armed yet)
+            out = run_cycle(
+                rules,
+                base_book(in_rth=False, armed=False),
+                live=True,
+                broker_note="test",
+                repo_root=root,
+                now=self.at(9),
+            )
+            line = self._ticket_lines(out)[0]
+            self.assertEqual(line["execute"], "deferred")
+            self.assertEqual(line["reason"], "arm_required")
+            self.assertTrue(p.exists())
+            self.assertEqual(posted, [])
+            self.assertEqual(json.loads(p.read_text())["first_seen_at"], first_seen)
+
+            # 10:00 — open and armed. Same gate list, no special resume path.
+            out = run_cycle(
+                rules,
+                base_book(in_rth=True, armed=True),
+                live=True,
+                broker_note="test",
+                repo_root=root,
+                now=self.at(10),
+            )
+            line = self._ticket_lines(out)[0]
+            self.assertEqual(line["execute"], "posted")
+            self.assertIs(line["sent"], True)
+            self.assertEqual(len(posted), 1)
+            self.assertEqual(posted[0]["symbol"], "ETHA")
+            self.assertEqual(posted[0]["qty"], 11)
+
+            # and only now does the file move
+            self.assertFalse(p.exists())
+            done = root / "config" / "outbox" / "done" / p.name
+            self.assertTrue(done.exists())
+            landed = json.loads(done.read_text())
+            self.assertEqual(landed["schwab_order_id"], "1007762031724")
+            self.assertEqual(landed["first_seen_at"], first_seen)
+            self.assertFalse((root / "config" / "outbox" / "failed").exists())
+
+    def test_a_waiting_ticket_is_re_gated_not_waved_through(self):
+        """Waiting carries no permission forward.
+
+        The ticket defers at 03:00, and by the open the book has grown a
+        working entry on the symbol. It must be refused on that, not posted
+        because it 'was already approved last night'.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir, no_network():
+            root = Path(tmpdir)
+            p = self._write(root, ticket(qty=11))
+            run_cycle(
+                example_rules(),
+                base_book(in_rth=False, armed=False),
+                live=True,
+                broker_note="test",
+                repo_root=root,
+                now=self.at(3),
+            )
+            self.assertTrue(p.exists())
+            busy = base_book(
+                in_rth=True,
+                armed=True,
+                orders=[
+                    {
+                        "id": "777",
+                        "symbol": "ETHA",
+                        "side": "BUY",
+                        "status": "WORKING",
+                        "type": "LIMIT",
+                        "price": 18.60,
+                        "duration": "GOOD_TILL_CANCEL",
+                        "qty": 3,
+                        "remaining": 3,
+                    }
+                ],
+            )
+            out = run_cycle(
+                example_rules(),
+                busy,
+                live=True,
+                broker_note="test",
+                repo_root=root,
+                now=self.at(10),
+            )
+            line = self._ticket_lines(out)[0]
+            self.assertEqual(line["reason"], "existing_entry_in_book")
+            self.assertEqual(line["execute"], "refused")
+            self.assertTrue((root / "config" / "outbox" / "failed" / p.name).exists())
 
 
 if __name__ == "__main__":

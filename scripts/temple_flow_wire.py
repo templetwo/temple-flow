@@ -58,6 +58,89 @@ MAX_TICKET_NOTIONAL_PCT_DEFAULT = 0.35
 # config/cancel_refusals.json — order_ids Schwab refused with HTTP 400 today.
 CANCEL_REFUSAL_STATE = ("config", "cancel_refusals.json")
 
+# --- outbox refusal disposition -------------------------------------------
+# Anthony, 2026-09-03 07:49 ET:
+#   "They should wait not die. Execution should start back up when the markets
+#    open."
+# Before that directive every refusal quarantined to config/outbox/failed/,
+# so a ticket approved at 22:00 was dead by 09:30 for the single offence of
+# having been written while the market was shut.
+
+WAIT_REFUSALS = frozenset(
+    {
+        "outside_rth",
+        "arm_required",
+        "orders_unproven",
+        "book_missing",
+        "book_not_schwab_read",
+        "equity_unknown_cannot_size",
+        "new_risk_blocked",
+    }
+)
+"""Refusals that PARK the ticket in config/outbox/ to be re-gated next cycle.
+
+THE RULE: a refusal is a WAIT only when nothing about the ticket is wrong. The
+ticket is well-formed, inside the universe, inside every cap — and the only
+thing standing in its way is the clock, the session arm file, a degraded broker
+read, or a daily box that resets (breaker, peak-DD, max-opens). Every one of
+those is a property of the WORLD at this instant, not of the ticket, so a later
+cycle can legitimately find it changed.
+
+A parked ticket is re-gated from scratch every cycle. It is never "half
+approved", it carries no permission forward, and it posts only when the full
+gate list passes on a fresh book. Waiting is bounded by the ticket's optional
+`expires_at` and by the optional rules field `outbox.max_wait_days`.
+"""
+
+TERMINAL_REFUSALS = frozenset(
+    {
+        "ticket_unreadable",
+        "ticket_schema_invalid",
+        "ticket_expired",
+        "ticket_wait_exceeded",
+        "rules_missing",
+        "not_in_live_universe",
+        "protect_only_no_entry",
+        "ticket_limit_above_cap",
+        "through_cap_idea_dead",
+        "qty_clipped_to_zero",
+        "ticket_qty_exceeds_risk_clip",
+        "notional_cap_uncomputable",
+        "ticket_notional_over_cap",
+        "existing_entry_in_book",
+        "one_sell_law_existing_sell",
+        "already_long_no_add",
+        "duplicate_working_order",
+        "cancel_order_id_not_working_in_book",
+        "cancel_symbol_not_in_live_universe",
+        "cancel_skipped_refused_today",
+    }
+)
+"""Refusals that QUARANTINE the ticket to config/outbox/failed/ immediately.
+
+THE RULE: the refusal names something about the ticket itself, or about a
+standing rule it violates, that no later cycle can change. Waiting on one of
+these is waiting forever, so it is refused at 03:00 exactly as it would be at
+10:00 — which is why the terminal checks that need no clock and no fresh quote
+run FIRST in gate_outbox_ticket. `unknown_action` reaches here inside
+`ticket_schema_invalid`, which carries it in `schema_errors`.
+
+An unclassified reason is treated as TERMINAL (see refusal_is_wait): the
+pre-directive behaviour is the fail-closed one, because a reason nobody
+classified must never park a ticket on a live wire forever.
+"""
+
+
+def refusal_is_wait(reason: str | None) -> bool:
+    """True when a refused outbox ticket should stay put and be re-gated.
+
+    Fail-closed by construction: only a reason explicitly listed in
+    WAIT_REFUSALS waits. Anything else — including a reason added to the wire
+    tomorrow and never classified — quarantines, which is what the loop did
+    for every refusal before 2026-09-03.
+    """
+    return reason in WAIT_REFUSALS
+
 
 def now_et(now: datetime | None = None) -> datetime:
     if now is None:
@@ -1351,9 +1434,13 @@ def execute_action(
     return out
 
 
-# Ticket outcomes that clear the outbox. Everything else quarantines to
-# failed/ — a refused ticket is never retried silently on the next cycle.
+# Ticket outcomes that clear the outbox into done/. Everything else moves to
+# failed/ — with ONE exception, `deferred`, which is the only outcome that
+# leaves the ticket where it is. See _TICKET_WAIT and WAIT_REFUSALS.
 _TICKET_DONE = ("posted", "canceled", "skip_already_sent")
+# The outcome that does not move the file at all. Named rather than inlined so
+# the "does this ticket move?" decision has exactly one place to read.
+_TICKET_WAIT = ("deferred",)
 
 
 def run_cycle(
@@ -1363,8 +1450,12 @@ def run_cycle(
     broker_note: str = "",
     rules_path: str = "",
     repo_root: Path | None = None,
+    now: datetime | None = None,
 ) -> list[dict]:
-    rth = book.get("in_rth") if "in_rth" in book else in_rth()
+    # `now` is threaded to every lane so one cycle is internally consistent:
+    # the clock that answers RTH is the clock that stamps first_seen_at and the
+    # clock that decides whether a ticket has expired.
+    rth = book.get("in_rth") if "in_rth" in book else in_rth(now)
     header = {
         "op": "cycle",
         "mode": "live" if live else "dry-run",
@@ -1402,7 +1493,12 @@ def run_cycle(
         path = ticket_data.get("path")
         try:
             e = execute_outbox_ticket(
-                ticket_data, live=live, rules=rules, book=book, repo_root=repo_root
+                ticket_data,
+                live=live,
+                rules=rules,
+                book=book,
+                repo_root=repo_root,
+                now=now,
             )
         except Exception as exc:
             e = {
@@ -1418,6 +1514,12 @@ def run_cycle(
         logj(e)
         outbox_results.append(e)
         if e.get("dry_run"):
+            continue
+        if e.get("execute") in _TICKET_WAIT:
+            # Anthony 2026-09-03: "They should wait not die." The ticket stays
+            # in config/outbox/ and is re-gated from scratch next cycle. Note
+            # the shape: `deferred` is an ALLOWLIST of one, so an unrecognised
+            # outcome still quarantines rather than silently parking forever.
             continue
         if path is not None:
             move_ticket(
@@ -1435,7 +1537,7 @@ def run_cycle(
         # limits the damage (protect stops go first) but does not close it.
         try:
             e = execute_action(
-                a, live=live, rth=rth, repo_root=repo_root, book=book
+                a, live=live, rth=rth, repo_root=repo_root, now=now, book=book
             )
         except Exception as exc:
             e = dict(a)
@@ -1673,6 +1775,91 @@ def ticket_notional_cap(rules: dict, equity: float | None) -> float | None:
     return min(caps) if caps else None
 
 
+def _parse_ticket_time(value: Any) -> datetime:
+    """Parse a ticket ISO timestamp. A bare stamp means ET; raises ValueError.
+
+    now_et() does the tz work: naive → stamped ET, offset-carrying → converted
+    to ET, so both compare correctly against a wall clock the human reads.
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("timestamp must be a non-empty ISO string")
+    s = value.strip()
+    if s[-1] in ("Z", "z"):
+        s = s[:-1] + "+00:00"
+    return now_et(datetime.fromisoformat(s))
+
+
+def outbox_max_wait_days(rules: dict) -> tuple[float | None, str | None]:
+    """rules['outbox']['max_wait_days'] → (days, problem).
+
+    ABSENT BY DEFAULT AND THAT IS ANTHONY'S CALL: with no value, a ticket waits
+    indefinitely and only `expires_at` or a human bounds it. A value that will
+    not parse is reported as a problem and treated as absent — the failure mode
+    of a bad config here is a ticket waiting, which posts nothing.
+    """
+    o = rules.get("outbox")
+    if not isinstance(o, dict) or "max_wait_days" not in o:
+        return None, None
+    raw = o.get("max_wait_days")
+    if raw is None:
+        return None, None
+    try:
+        days = float(raw)
+    except (TypeError, ValueError):
+        return None, f"max_wait_days_unparseable:{type(raw).__name__}"
+    if not math.isfinite(days) or days < 0:
+        return None, f"max_wait_days_out_of_range:{raw}"
+    return days, None
+
+
+def ticket_wait_bounds_refusal(
+    t: dict, rules: dict, now: datetime | None = None
+) -> tuple[str | None, dict]:
+    """Human-set bounds on how long a ticket may wait. Checked before every gate.
+
+    Waiting exists because Anthony said a timing refusal should wait, not die.
+    These two fields are how he ends a wait without being at the glass:
+
+      ticket `expires_at`        — ISO, ET or with an offset. Past it, the
+                                   ticket is TERMINAL (`ticket_expired`).
+      rules  outbox.max_wait_days — N days measured from the `first_seen_at`
+                                   the daemon stamped on the FIRST deferral.
+                                   Past it, TERMINAL (`ticket_wait_exceeded`).
+
+    A stamp that will not parse is a corrupt ticket, not a fresh one: it is
+    refused as a schema error rather than silently restarting the clock.
+    """
+    detail: dict = {}
+    t_now = now_et(now)
+
+    if t.get("expires_at") is not None:
+        try:
+            expires = _parse_ticket_time(t.get("expires_at"))
+        except (ValueError, TypeError):
+            return "ticket_schema_invalid", {"schema_errors": ["expires_at_not_iso"]}
+        detail["expires_at"] = expires.isoformat()
+        if t_now > expires:
+            detail["now"] = t_now.isoformat()
+            return "ticket_expired", detail
+
+    if t.get("first_seen_at") is not None:
+        try:
+            first_seen = _parse_ticket_time(t.get("first_seen_at"))
+        except (ValueError, TypeError):
+            return "ticket_schema_invalid", {"schema_errors": ["first_seen_at_not_iso"]}
+        detail["first_seen_at"] = first_seen.isoformat()
+        days, problem = outbox_max_wait_days(rules)
+        if problem:
+            detail["max_wait_days_problem"] = problem
+        if days is not None:
+            detail["max_wait_days"] = days
+            if first_seen + timedelta(days=days) < t_now:
+                detail["now"] = t_now.isoformat()
+                return "ticket_wait_exceeded", detail
+
+    return None, detail
+
+
 def gate_outbox_ticket(
     t: dict, rules: dict, book: dict, now: datetime | None = None
 ) -> tuple[str | None, dict]:
@@ -1680,11 +1867,60 @@ def gate_outbox_ticket(
 
     Returns (refusal_reason | None, detail). A ticket that clears every gate
     returns (None, detail) and only then may be POSTed.
+
+    ORDER IS LOAD-BEARING SINCE 2026-09-03, and it is the whole of what makes
+    "wait, don't die" safe. A WAIT refusal parks the ticket for the next cycle,
+    so if a WAIT check ran before a TERMINAL one, a ticket that can NEVER pass
+    would sit in the outbox until the open just to be killed at 09:30 — the
+    daemon would spend the night deferring a ticket for SOFI. So every TERMINAL
+    check that needs neither the clock nor a fresh quote runs FIRST:
+
+        wait bounds (expires_at / max_wait_days)   terminal
+        schema                                     terminal
+        orders leg proven                          WAIT   (book-derived gates
+                                                           below are all blind
+                                                           without it)
+        universe / protect-only                    terminal
+        limit vs cap                               terminal
+        equity known                               WAIT
+        risk clip, then notional cap               terminal
+        existing entry / one-sell / long / dup     terminal
+        risk box (breaker, peak-DD, max-opens)     WAIT
+        arm                                        WAIT
+        RTH                                        WAIT
+        last vs cap (through_cap_idea_dead)        terminal, evaluated LAST
+
+    Two orderings inside that list are deliberate, not incidental:
+      * the risk CLIP is checked before the NOTIONAL cap. They are different
+        caps and both bind; clip-first is what makes an oversized ticket report
+        the size law it broke rather than the buying-power one.
+      * `through_cap_idea_dead` is terminal but sits at the end because it is
+        the one terminal check that reads a live quote. Killing a ticket at
+        03:00 on an overnight print, when the gate exists to say "the idea is
+        dead in the session that is about to open", would be the wrong death.
+
+    ONE EXCEPTION TO "TERMINAL FIRST", STATED SO NOBODY READS THE LIST AS AN
+    ABSOLUTE: `orders_unproven` (a WAIT) runs ahead of the universe check (a
+    terminal that needs no book at all). During a Schwab outage a ticket for a
+    symbol the daemon may never trade therefore DEFERS instead of dying, and
+    only dies on the next healthy read. That is the cost of keeping the "no
+    book-derived gate is evaluated on a blind book" rule absolute, which is the
+    stronger safety property: the alternative is a gate order where some checks
+    read a book that has not proven itself.
     """
     detail: dict = {}
+
+    # Bounds a human set on waiting. Ahead of everything, including schema:
+    # an expired ticket is not worth a gate list, and neither field is
+    # meaningful once the daemon has decided the ticket is malformed.
+    reason, bounds = ticket_wait_bounds_refusal(t, rules, now)
+    detail.update(bounds)
+    if reason is not None:
+        return reason, detail
+
     errs = _ticket_schema_errors(t)
     if errs:
-        return "ticket_schema_invalid", {"schema_errors": errs}
+        return "ticket_schema_invalid", {**detail, "schema_errors": errs}
 
     action = str(t.get("action")).strip().lower()
     detail["action"] = action
@@ -1702,6 +1938,9 @@ def gate_outbox_ticket(
         return "orders_unproven", detail
 
     if action == "cancel_by_id":
+        # Terminal first, WAIT last, same law as the bracket lane below: an id
+        # that is not working, or is working on a symbol the daemon may not
+        # touch, is refused at 03:00. Only the clock defers.
         order_id = t.get("order_id")
         detail["order_id"] = str(order_id)
         target = working_order_by_id(book, order_id)
@@ -1727,37 +1966,25 @@ def gate_outbox_ticket(
     if sym in PROTECT_ONLY:
         return "protect_only_no_entry", detail
 
-    # arm + RTH, exactly as plan_actions gates a new entry
-    if bool(rules.get("arm_required", True)) and not bool(book.get("armed")):
-        return "arm_required", detail
-    if not rth:
-        return "outside_rth", detail
-
     # The 2026-08-28 no-chase law, which the outbox lane did not carry.
     # AWAY_MODE.md: "The outbox is not a side door around the standing rules."
     # The rules file states the cap as an IDEA-level threshold ("No chase
     # through 18.90", "through cap = idea dead"), not as a guardrail on the
     # daemon's own repricing, so a human-approved ticket is inside its scope.
-    # limit-vs-cap needs no quotes and is always checkable; last-vs-cap needs a
-    # proven quotes leg.
+    # limit-vs-cap needs no quotes and is always checkable, so it is terminal
+    # here; last-vs-cap needs a proven quotes leg and is evaluated at the end.
     entry_spec = (rules.get("entries") or {}).get(sym) or {}
     entry_cap = _f(entry_spec.get("cap"))
     detail["cap"] = entry_cap
     if entry_cap is not None and limit > entry_cap:
         return "ticket_limit_above_cap", detail
-    if book_leg_proven(book, "quotes"):
-        last_now = last_price(book, sym)
-        detail["last"] = last_now
-        if entry_cap is not None and last_now is not None and last_now > entry_cap:
-            return "through_cap_idea_dead", detail
 
-    # the same risk box a planned entry passes through
-    box = risk_box(rules, book)
-    if not box["ok"]:
-        detail["risk_box"] = box["reasons"]
-        return "new_risk_blocked", detail
-
-    equity = box["equity"]
+    # Sizing. Both caps are terminal, but both need live equity, so an unknown
+    # equity WAITS rather than killing a ticket over a number the daemon could
+    # not read. equity is the same field risk_box reports; risk_box itself runs
+    # further down because its verdict is a resettable daily box, not a
+    # property of the ticket.
+    equity = _f(book.get("equity"))
     detail["equity"] = equity
     if equity is None or equity <= 0:
         return "equity_unknown_cannot_size", detail
@@ -1796,6 +2023,30 @@ def gate_outbox_ticket(
     if dup:
         detail["duplicate_order_id"] = dup.get("id") or dup.get("orderId")
         return "duplicate_working_order", detail
+
+    # --- from here down every refusal WAITS ---
+    # the same risk box a planned entry passes through. A tripped breaker,
+    # peak-DD or max_opens is a state of the day, and the day turns over.
+    box = risk_box(rules, book)
+    detail["opens"] = box["opens"]
+    if not box["ok"]:
+        detail["risk_box"] = box["reasons"]
+        return "new_risk_blocked", detail
+
+    # arm + RTH, exactly as plan_actions gates a new entry. These two are the
+    # reason the whole deferral machinery exists.
+    if bool(rules.get("arm_required", True)) and not bool(book.get("armed")):
+        return "arm_required", detail
+    if not rth:
+        return "outside_rth", detail
+
+    # Terminal, and last: it is the only terminal check that reads a quote, so
+    # it is answered by the session that is actually about to trade.
+    if book_leg_proven(book, "quotes"):
+        last_now = last_price(book, sym)
+        detail["last"] = last_now
+        if entry_cap is not None and last_now is not None and last_now > entry_cap:
+            return "through_cap_idea_dead", detail
 
     return None, detail
 
@@ -1898,6 +2149,48 @@ def stamp_ticket_order_id(path: Path, ticket: dict, order_id: Any) -> bool:
         return False
 
 
+def stamp_ticket_first_seen(
+    path: Path | None, ticket: dict, now: datetime | None = None
+) -> str | None:
+    """Stamp first_seen_at on the FIRST deferral. Returns the stamp, or None.
+
+    Same temp + os.replace shape as stamp_ticket_order_id: the ticket file is
+    never observed half-written.
+
+    A ticket that already carries first_seen_at is NEVER rewritten. That stamp
+    is the clock outbox.max_wait_days measures from, and a stamp refreshed each
+    cycle makes the bound unfireable — the ticket would wait forever while a
+    field claimed it had just arrived. `deferrals` rides along on that one write
+    for the same reason: it marks "this ticket has been deferred before", so the
+    log line can say second-or-later without the file being rewritten every
+    900s.
+    """
+    if path is None or ticket.get("first_seen_at"):
+        return None
+    stamp = now_et(now).isoformat()
+    try:
+        data = dict(ticket)
+        data["first_seen_at"] = stamp
+        data["deferrals"] = 1
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(data, indent=2, sort_keys=True))
+        os.replace(tmp, path)
+        return stamp
+    except Exception as e:
+        logj(
+            {
+                "op": "outbox_defer_stamp",
+                "execute": "stamp_failed",
+                "error": type(e).__name__,
+                "path": str(path),
+                "note": "ticket waits unstamped; max_wait_days cannot bound it yet",
+                "sent": False,
+                "mutated": False,
+            }
+        )
+        return None
+
+
 def execute_outbox_ticket(
     ticket_data: dict,
     live: bool,
@@ -1911,6 +2204,10 @@ def execute_outbox_ticket(
     rules and book are REQUIRED: the PR shipped this path with neither, so a
     ticket could name any symbol, any size, at any hour. Gates are evaluated in
     dry-run too, so a dry cycle reports exactly what a live cycle would refuse.
+
+    Every refusal leaves through _refuse(), which reads WAIT_REFUSALS and
+    returns execute='deferred' or execute='refused'. One exit, so a branch
+    added later cannot forget to classify itself.
     """
     t = ticket_data.get("ticket") or {}
     path = ticket_data.get("path")
@@ -1923,19 +2220,41 @@ def execute_outbox_ticket(
         "mutated": False,
     }
 
+    def _refuse(reason: str, detail: dict | None = None) -> dict:
+        """The one exit for a refused ticket. WAIT parks it; TERMINAL kills it."""
+        if detail is not None:
+            out["gate"] = detail
+        out["reason"] = reason
+        if not refusal_is_wait(reason):
+            out["execute"] = "refused"
+            return out
+        out["execute"] = "deferred"
+        try:
+            prior = int(t.get("deferrals") or 0)
+        except (TypeError, ValueError):
+            prior = 0
+        # The file is written once, so this reads 1 on the cycle that stamps
+        # and 2 on every cycle after: "second or later", not an exact tally.
+        out["deferrals"] = prior + 1
+        seen = t.get("first_seen_at")
+        # A dry run must not touch the ticket. Stamping in one would start the
+        # max_wait_days clock from a hand-run that posted nothing.
+        if live:
+            stamped = stamp_ticket_first_seen(path, t, now)
+            if stamped:
+                seen = stamped
+                out["stamped_first_seen"] = True
+        out["first_seen_at"] = seen
+        return out
+
     if ticket_data.get("load_error"):
-        out["execute"] = "refused"
-        out["reason"] = "ticket_unreadable"
         out["error"] = ticket_data["load_error"]
-        return out
+        return _refuse("ticket_unreadable")
     if not isinstance(rules, dict) or not rules:
-        out["execute"] = "refused"
-        out["reason"] = "rules_missing"
-        return out
+        return _refuse("rules_missing")
     if not isinstance(book, dict) or not book:
-        out["execute"] = "refused"
-        out["reason"] = "book_missing"
-        return out
+        # WAIT: an absent book is a read that failed, not a bad ticket.
+        return _refuse("book_missing")
 
     existing_oid = t.get("schwab_order_id")
     if existing_oid:
@@ -1946,9 +2265,7 @@ def execute_outbox_ticket(
     reason, detail = gate_outbox_ticket(t, rules, book, now)
     out["gate"] = detail
     if reason is not None:
-        out["execute"] = "refused"
-        out["reason"] = reason
-        return out
+        return _refuse(reason)
 
     if not live:
         out["execute"] = "dry_run"
@@ -1959,9 +2276,7 @@ def execute_outbox_ticket(
     # an unproven orders leg; this is the boundary copy of the same rule.
     eligible, why = book_is_live_eligible(book)
     if not eligible:
-        out["execute"] = "refused"
-        out["reason"] = why
-        return out
+        return _refuse(why)
 
     action = detail["action"]
     if action == "place_gtc_bracket":
@@ -1995,9 +2310,7 @@ def execute_outbox_ticket(
     # cancel_by_id — gated above to a working order on a live-universe symbol
     order_id = t.get("order_id")
     if cancel_refused_today(order_id, repo_root, now):
-        out["execute"] = "refused"
-        out["reason"] = "cancel_skipped_refused_today"
-        return out
+        return _refuse("cancel_skipped_refused_today")
     res = cancel_by_id(order_id)
     out["schwab"] = {k: res.get(k) for k in ("http", "error")}
     if res.get("http") in (200, 204):
