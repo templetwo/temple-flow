@@ -6,9 +6,11 @@ POST helper is real (TRIGGER GTC limit + attached stop; protect STOP GTC).
 Default remains dry-run. launchd may pass --live when config/LIVE_OK exists.
 
 Flags:
-  --status   read-only book / orders / quotes (or box fallback)
-  --once     one plan cycle (launchd path)
-  --live     refused unless config/LIVE_OK AND TEMPLE_FLOW_LIVE=1
+  --status         read-only book / orders / quotes (or box fallback)
+  --once           one plan cycle (launchd path)
+  --live           refused unless config/LIVE_OK AND TEMPLE_FLOW_LIVE=1
+  --approve-plan   PLAN_FILE TICKET_ID — copy one planned candidate into the
+                   outbox as an approved ticket. Offline; no broker call.
 
 plan_actions(rules, book) is pure and unit-testable (no network).
 """
@@ -23,6 +25,15 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
+# The off-hours idea generator, isolated in its own file ON PURPOSE: it is the
+# seam Grok's spec replaces, and every risk cap stays on THIS side of it. See
+# the contract at the top of temple_flow_strategy.py.
+try:  # pragma: no cover - exercised by every import of this module
+    import temple_flow_strategy as strategy
+except ImportError:  # pragma: no cover - only when imported from another cwd
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import temple_flow_strategy as strategy
 
 try:
     from zoneinfo import ZoneInfo
@@ -58,6 +69,24 @@ MAX_TICKET_NOTIONAL_PCT_DEFAULT = 0.35
 # config/cancel_refusals.json — order_ids Schwab refused with HTTP 400 today.
 CANCEL_REFUSAL_STATE = ("config", "cancel_refusals.json")
 
+# --- off-hours planning lane -----------------------------------------------
+# config/plans/<YYYY-MM-DD>_<HHMM>.json. READ-ONLY output: a plan is a proposal
+# a human approves, never an order. Nothing in this file writes to
+# config/outbox/ except cmd_approve_plan, which a human runs by hand.
+PLAN_DIR = ("config", "plans")
+#: Daily candles requested per symbol. A year of sessions is ~252; asking for
+#: more than the 55 the features need costs one HTTP call either way and leaves
+#: room for a longer-window strategy to land on this seam without a refetch.
+HISTORY_DAYS = 260
+#: Fewest daily bars that can answer the feature set: 50 for the slow SMA plus
+#: 5 more for its slope. Below this the plan says `insufficient_history`, which
+#: is NOT the same fact as `history_unproven` (a read that failed).
+MIN_HISTORY_BARS = 55
+#: How much older than `validity.max_data_age_minutes` a PLAN may be and still
+#: be approvable. 24 x 60min = a one-day approval window: plan overnight,
+#: Anthony approves in the morning, anything older is regenerated not approved.
+PLAN_STALE_MULTIPLIER = 24
+
 # --- outbox refusal disposition -------------------------------------------
 # Anthony, 2026-09-03 07:49 ET:
 #   "They should wait not die. Execution should start back up when the markets
@@ -75,6 +104,13 @@ WAIT_REFUSALS = frozenset(
         "book_not_schwab_read",
         "equity_unknown_cannot_size",
         "new_risk_blocked",
+        # --- the three re-evaluation WAITs (2026-09-04) ---
+        # All three say the same thing: the daemon could not READ what a
+        # `validity` block told it to check. None of them is a statement about
+        # the ticket, so all three are re-gated on the next healthy cycle.
+        "quotes_unproven",
+        "data_stale_refetch_next_cycle",
+        "history_unproven_refetch_next_cycle",
     }
 )
 """Refusals that PARK the ticket in config/outbox/ to be re-gated next cycle.
@@ -84,6 +120,16 @@ ticket is well-formed, inside the universe, inside every cap — and the only
 thing standing in its way is the clock, the session arm file, a degraded broker
 read, or the risk box. Every one of those is a property of the WORLD at this
 instant, not of the ticket, so a later cycle can legitimately find it changed.
+
+THE THREE 2026-09-04 ADDITIONS ARE THE SAME SHAPE, and are named here rather
+than left to the frozenset because this docstring explains its members:
+`quotes_unproven` (a `validity` ticket needs a live price and the quotes leg
+failed), `data_stale_refetch_next_cycle` (the price is there but too old to
+re-decide on — Anthony, 2026-09-03 11:47 EDT: "time sensitive data") and
+`history_unproven_refetch_next_cycle` (the daily-history refetch failed, or
+came back with too few bars to recompute the trend). Every one is a failed
+READ. None is a verdict on the idea — the verdict is `idea_stale_reevaluated`,
+which is terminal.
 
 "THE RISK BOX RESETS DAILY" IS TRUE OF ONE OF ITS THREE CLAUSES, NOT THREE.
 Only the day breaker is day-scoped. peak-DD is (peak-equity)/peak, not a daily
@@ -135,6 +181,10 @@ TERMINAL_REFUSALS = frozenset(
         "cancel_order_id_not_working_in_book",
         "cancel_symbol_not_in_live_universe",
         "cancel_skipped_refused_today",
+        # 2026-09-04. The re-evaluation verdict: the ticket carried a
+        # `validity` block, the daemon re-read the world at execution time, and
+        # a condition the human approved is no longer true.
+        "idea_stale_reevaluated",
     }
 )
 """Refusals that QUARANTINE the ticket to config/outbox/failed/ immediately.
@@ -147,17 +197,20 @@ that need no clock and no fresh quote run FIRST in gate_outbox_ticket.
 `unknown_action` reaches here inside `ticket_schema_invalid`, which carries it
 in `schema_errors`.
 
-SIX OF THESE ARE NOT LITERALLY IMMUTABLE, and saying otherwise would teach the
-next reader to reclassify them: `existing_entry_in_book`,
+SEVEN OF THESE ARE NOT LITERALLY IMMUTABLE, and saying otherwise would teach
+the next reader to reclassify them: `existing_entry_in_book`,
 `one_sell_law_existing_sell`, `already_long_no_add` and
 `duplicate_working_order` all read book state that changes when an order fills
-or is canceled, and `qty_clipped_to_zero` / `ticket_notional_over_cap` are
-derived from equity, which moves. They are TERMINAL on purpose anyway: each
-says the ticket collides with a position or an order that already exists, or
-that the account cannot carry the size approved. Re-approving is a decision a
-human should make with fresh eyes, not something a daemon should retry into
-overnight. Killing a ticket that might later have passed costs one hand-moved
-file; a daemon quietly re-arming an idea nobody re-approved costs money.
+or is canceled; `qty_clipped_to_zero` / `ticket_notional_over_cap` are derived
+from equity, which moves; and `idea_stale_reevaluated` reads a live price and a
+live trend, either of which can come back tomorrow. They are TERMINAL on
+purpose anyway: each says the ticket collides with a position or an order that
+already exists, that the account cannot carry the size approved, or that the
+idea a human approved is not the idea in front of the daemon now. Re-approving
+is a decision a human should make with fresh eyes, not something a daemon
+should retry into overnight. Killing a ticket that might later have passed
+costs one hand-moved file; a daemon quietly re-arming an idea nobody
+re-approved costs money.
 
 An unclassified reason is treated as TERMINAL (see refusal_is_wait): the
 pre-directive behaviour is the fail-closed one, because a reason nobody
@@ -1257,6 +1310,7 @@ def fetch_book() -> tuple[dict | None, str]:
         quotes: dict = {}
         rq = get("/marketdata/v1/quotes", {"symbols": "ETHA,IBIT,NVO,NOK"})
         quotes_ok = rq.status_code == 200
+        quotes_as_of = now_et().isoformat() if quotes_ok else None
         if quotes_ok:
             q = rq.json()
             for sym, rec in (q.items() if isinstance(q, dict) else []):
@@ -1268,6 +1322,16 @@ def fetch_book() -> tuple[dict | None, str]:
                     "mark": quote.get("mark"),
                     "bid": quote.get("bidPrice"),
                     "ask": quote.get("askPrice"),
+                    # WHEN THE PRICE WAS MADE, not when we read it. The read
+                    # stamp above is always ~0 minutes old on a daemon cycle
+                    # (the book is fetched once and handed straight to the
+                    # gates), so a freshness gate built on it alone could never
+                    # fire — experimental law #2, a gate that cannot fail is
+                    # not a gate. Schwab's own quote/trade time is what catches
+                    # a halted symbol, a frozen feed or a pre-market read.
+                    # Epoch ms; absent on some payloads, which is why
+                    # quote_age_minutes takes the OLDER of the two it can see.
+                    "quote_time": quote.get("quoteTime") or quote.get("tradeTime"),
                 }
 
         day_pnl = None
@@ -1289,6 +1353,10 @@ def fetch_book() -> tuple[dict | None, str]:
             "quotes": quotes,
             "orders_ok": orders_ok,
             "quotes_ok": quotes_ok,
+            # ET ISO stamp of the READ, present only when the quotes leg
+            # proved. Absent is not permission: quote_age_minutes returns None
+            # and a `validity` ticket WAITS rather than re-deciding blind.
+            "quotes_as_of": quotes_as_of,
             "source": "schwab_read",
             "token_safe": safe,
         }
@@ -1308,6 +1376,351 @@ def fetch_book() -> tuple[dict | None, str]:
         return book, "schwab_read"
     except Exception as e:
         return None, f"broker_error:{type(e).__name__}"
+
+
+def _broker_auth() -> dict:
+    """Schwab auth bootstrap for the read-only marketdata calls. Never raises.
+
+    Returns {"ok": bool, "headers": dict, "base": str, "note": str}. A dict and
+    not a (value, reason) tuple on purpose: the refusal-classification tripwire
+    scans every function that returns a string-literal tuple, and a note from a
+    read helper is not a ticket refusal reason.
+
+    DELIBERATE DUPLICATION OF fetch_book's BOOTSTRAP, and it is not laziness.
+    fetch_book's Schwab-JSON mapping is exercised by NO test (it says so in its
+    own docstring); collapsing the two into one helper is an edit to the live
+    read path that the suite cannot verify. Documented duplication beats an
+    unverifiable refactor on a money wire. If you DO collapse them, do it with
+    a test harness for fetch_book in the same commit. The two copies must stay
+    in step: token path, .env load, account hash, base URL.
+    """
+    if not broker_available():
+        return {"ok": False, "headers": {}, "base": "", "note": "broker not on this machine"}
+    try:
+        sys.path.insert(0, str(BROKER_ROOT))
+        os.chdir(BROKER_ROOT)
+        try:
+            from dotenv import load_dotenv  # type: ignore
+
+            load_dotenv(BROKER_ROOT / ".env")
+        except Exception:
+            env_path = BROKER_ROOT / ".env"
+            if env_path.exists():
+                for line in env_path.read_text().splitlines():
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    k, v = line.split("=", 1)
+                    os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+        from src.token_manager import TokenManager  # type: ignore
+
+        tm = TokenManager()
+        st = tm.get_token_status()
+        if isinstance(st, dict) and (
+            st.get("status") == "refresh_expired" or st.get("refresh_valid") is False
+        ):
+            return {
+                "ok": False,
+                "headers": {},
+                "base": "",
+                "note": "oauth_required status=" + str(st.get("status")),
+            }
+        token = tm.get_token()
+        return {
+            "ok": True,
+            "headers": {"Authorization": "Bearer " + token},
+            "base": "https://api.schwabapi.com",
+            "note": "schwab_auth_ok",
+        }
+    except Exception as e:
+        return {
+            "ok": False,
+            "headers": {},
+            "base": "",
+            "note": "broker_error:" + type(e).__name__,
+        }
+
+
+def fetch_daily_history(symbol: str, days: int = HISTORY_DAYS) -> dict:
+    """Read-only daily candles for one symbol. Never posts, never mutates.
+
+    COVERAGE IS STATED, exactly like the book's legs: the return always carries
+    `history_ok`, and absence of proof is not permission. A failed call yields
+    `history_ok: False` with an empty candle list, never a silent [] that a
+    caller could read as "the trend is flat". Same fail-closed contract as
+    book_leg_proven.
+
+    Returns:
+        {"symbol", "candles": [{"datetime","open","high","low","close","volume"}],
+         "history_ok": bool, "as_of": ISO ET or None, "bars": int, "note": str}
+
+    `days` trims the TAIL of a one-year daily pull rather than doing date math
+    against the exchange calendar: sessions are not days, and a startDate in
+    epoch-ms that lands on a holiday is a silent short read. One HTTP call
+    either way.
+
+    INJECTABLE: every caller reaches this through the module global, so a test
+    swaps it with temple_flow_wire.fetch_daily_history = fake. The suite is run
+    with SPIRAL_BROKER_ROOT=/nonexistent, so even an unpatched call returns at
+    the broker_available() guard in _broker_auth without touching the network.
+    """
+    out = {
+        "symbol": str(symbol).upper(),
+        "candles": [],
+        "history_ok": False,
+        "as_of": None,
+        "bars": 0,
+        "note": "",
+    }
+    auth = _broker_auth()
+    if not auth.get("ok"):
+        out["note"] = str(auth.get("note") or "auth_unavailable")
+        return out
+    try:
+        import requests  # type: ignore
+
+        r = requests.get(
+            auth["base"] + "/marketdata/v1/pricehistory",
+            headers=auth["headers"],
+            params={
+                "symbol": out["symbol"],
+                "periodType": "year",
+                "period": 1,
+                "frequencyType": "daily",
+                "frequency": 1,
+                "needExtendedHoursData": "false",
+            },
+            timeout=30,
+        )
+        if r.status_code != 200:
+            out["note"] = "pricehistory_http=" + str(r.status_code)
+            return out
+        raw = r.json()
+        if not isinstance(raw, dict) or raw.get("empty") is True:
+            out["note"] = "pricehistory_empty"
+            return out
+        candles = []
+        for c in raw.get("candles") or []:
+            if not isinstance(c, dict):
+                continue
+            close = _f(c.get("close"))
+            if close is None:
+                continue
+            candles.append(
+                {
+                    "datetime": c.get("datetime"),
+                    "open": _f(c.get("open")),
+                    "high": _f(c.get("high")),
+                    "low": _f(c.get("low")),
+                    "close": close,
+                    "volume": c.get("volume"),
+                }
+            )
+        if not candles:
+            out["note"] = "pricehistory_no_usable_candles"
+            return out
+        try:
+            n = int(days)
+        except (TypeError, ValueError):
+            n = HISTORY_DAYS
+        if n > 0:
+            candles = candles[-n:]
+        out["candles"] = candles
+        out["bars"] = len(candles)
+        out["history_ok"] = True
+        out["as_of"] = now_et().isoformat()
+        out["last_bar_at"] = candles[-1].get("datetime")
+        out["note"] = "schwab_pricehistory"
+        return out
+    except Exception as e:
+        out["note"] = "history_error:" + type(e).__name__
+        return out
+
+
+# --- feature math ----------------------------------------------------------
+# Pure, no network, no clock. Every one of these returns None rather than
+# raising or substituting a plausible number: a feature the daemon could not
+# compute must read as UNKNOWN downstream, because check_conditions() treats an
+# unknown as False and a missing feature must never look like a passing one.
+
+
+def closes_of(candles: list) -> list:
+    """Closing prices, in order, skipping any candle without a usable close."""
+    out = []
+    for c in candles or []:
+        v = _f((c or {}).get("close")) if isinstance(c, dict) else None
+        if v is not None:
+            out.append(v)
+    return out
+
+
+def sma(values: list, n: int) -> float | None:
+    """Simple mean of the last n values. None when there are fewer than n."""
+    if n <= 0 or len(values) < n:
+        return None
+    return sum(values[-n:]) / float(n)
+
+
+def sma_slope(values: list, n: int, lookback: int) -> float | None:
+    """Per-day change of the n-period SMA over `lookback` sessions.
+
+    (sma_now - sma_lookback_ago) / lookback, in dollars per day. Needs
+    n + lookback values; None below that rather than a slope off a short window.
+    """
+    if n <= 0 or lookback <= 0 or len(values) < n + lookback:
+        return None
+    now_sma = sma(values, n)
+    then_sma = sma(values[: len(values) - lookback], n)
+    if now_sma is None or then_sma is None:
+        return None
+    return (now_sma - then_sma) / float(lookback)
+
+
+def atr(candles: list, n: int) -> float | None:
+    """SIMPLE n-period mean of the true range. Not Wilder's smoothing.
+
+    TR = max(high-low, |high - prev_close|, |low - prev_close|). Needs n+1
+    candles (the first TR needs a previous close). None if any of the last n
+    bars is missing a high, low or close — a partial ATR sizes a stop wrong,
+    and the stop is the only thing standing between the account and the trade.
+    """
+    if n <= 0 or len(candles or []) < n + 1:
+        return None
+    trs: list = []
+    for i in range(len(candles) - n, len(candles)):
+        cur = candles[i] if isinstance(candles[i], dict) else {}
+        prev = candles[i - 1] if isinstance(candles[i - 1], dict) else {}
+        hi = _f(cur.get("high"))
+        lo = _f(cur.get("low"))
+        prev_close = _f(prev.get("close"))
+        if hi is None or lo is None or prev_close is None:
+            return None
+        trs.append(max(hi - lo, abs(hi - prev_close), abs(lo - prev_close)))
+    if len(trs) != n:
+        return None
+    return sum(trs) / float(n)
+
+
+def window_return(values: list, n: int) -> float | None:
+    """(last - value n sessions ago) / that value, from CLOSES only.
+
+    Uses closes rather than the live quote on purpose: a 5-day return that
+    moves every 900s is not a 5-day return, and the plan file must be
+    re-derivable hours later from the same candles.
+    """
+    if n <= 0 or len(values) < n + 1:
+        return None
+    base = values[-(n + 1)]
+    if base == 0:
+        return None
+    return (values[-1] - base) / base
+
+
+def quote_age_minutes(
+    book: dict, symbol: str, now: datetime | None = None
+) -> float | None:
+    """Minutes since this symbol's price was TRUE. None when unknowable.
+
+    THE OLDER OF TWO CLOCKS, and both are needed:
+      * `book["quotes_as_of"]` — when the daemon read the quotes leg. On a
+        daemon cycle this is always ~0, so alone it makes an inert gate.
+      * `quotes[sym]["quote_time"]` — Schwab's own quote/trade stamp (epoch ms
+        or seconds). This is the one that fires on a halted symbol or a frozen
+        feed, which is the case Anthony's "time sensitive data" names.
+
+    None means NEITHER stamp was readable, and the caller must treat that as
+    stale rather than fresh: a book that does not state when it was true has
+    not proven freshness, and absence of proof is not permission.
+
+    A stamp in the future (broker clock skew) is clamped to 0, not folded into
+    an absolute value — skew is not staleness.
+    """
+    t_now = now_et(now)
+    ages: list = []
+    stamp = book.get("quotes_as_of") if isinstance(book, dict) else None
+    if stamp:
+        try:
+            ages.append((t_now - _parse_ticket_time(stamp)).total_seconds() / 60.0)
+        except (ValueError, TypeError):
+            pass
+    q = (book.get("quotes") or {}).get(symbol) if isinstance(book, dict) else None
+    if isinstance(q, dict):
+        raw = q.get("quote_time")
+        if isinstance(raw, str) and raw.strip():
+            try:
+                ages.append((t_now - _parse_ticket_time(raw)).total_seconds() / 60.0)
+            except (ValueError, TypeError):
+                pass
+        else:
+            epoch = _f(raw)
+            if epoch is not None and epoch > 0:
+                # ms since epoch above ~1e11, seconds below it
+                seconds = epoch / 1000.0 if epoch > 1e11 else epoch
+                try:
+                    when = datetime.fromtimestamp(seconds, tz=timezone.utc)
+                    ages.append((t_now - when.astimezone(ET)).total_seconds() / 60.0)
+                except (OverflowError, OSError, ValueError):
+                    pass
+    if not ages:
+        return None
+    return max(0.0, max(ages))
+
+
+def compute_features(symbol: str, book: dict, history: dict, rules: dict) -> dict:
+    """The legible feature set one symbol is judged on. Pure.
+
+    Every key is present on every call, set to None when it could not be
+    computed, so the plan file shows the same shape for a symbol that produced
+    a candidate and one that did not.
+    """
+    p = strategy.params(rules)
+    sym = str(symbol).upper()
+    candles = (history or {}).get("candles") or []
+    closes = closes_of(candles)
+    entry_spec = (rules.get("entries") or {}).get(sym) or {}
+    cap = _f(entry_spec.get("cap"))
+    last = last_price(book, sym) if book_leg_proven(book, "quotes") else None
+
+    fast = int(p["sma_fast"])
+    slow = int(p["sma_slow"])
+    sma_fast = sma(closes, fast)
+    sma_slow = sma(closes, slow)
+    working = existing_entry(book, sym) if book_leg_proven(book, "orders") else None
+
+    feats = {
+        "symbol": sym,
+        "last": last,
+        "cap": cap,
+        "bars": len(closes),
+        "sma20": sma_fast,
+        "sma50": sma_slow,
+        "sma20_slope": sma_slope(closes, fast, int(p["slope_lookback"])),
+        "sma50_slope": sma_slope(closes, slow, int(p["slope_lookback"])),
+        "atr14": atr(candles, int(p["atr_period"])),
+        "ret5d": window_return(closes, 5),
+        "last_vs_cap": (
+            round(last - cap, 4) if (last is not None and cap is not None) else None
+        ),
+        "dist_to_sma20_pct": (
+            (last - sma_fast) / sma_fast
+            if (last is not None and sma_fast not in (None, 0))
+            else None
+        ),
+        "position_qty": position_qty(book, sym),
+        "has_working_entry": working is not None,
+        "working_entry_id": (
+            (working.get("id") or working.get("orderId")) if working else None
+        ),
+        "history_ok": bool((history or {}).get("history_ok")),
+        "history_as_of": (history or {}).get("as_of"),
+        "quotes_ok": book_leg_proven(book, "quotes"),
+        "quote_as_of": book.get("quotes_as_of"),
+        "sma_fast_period": fast,
+        "sma_slow_period": slow,
+        "atr_period": int(p["atr_period"]),
+        "slope_lookback": int(p["slope_lookback"]),
+    }
+    return feats
 
 
 def _cancel_refusal_path(repo_root: Path | None = None) -> Path:
@@ -1468,6 +1881,329 @@ def execute_action(
     return out
 
 
+# --- off-hours planning lane ------------------------------------------------
+# Anthony, 2026-09-03 07:49 EDT: "on market off hours, there should be more
+# strategy being defined and planning on the trends."
+#
+# THE PLANNER PLACES NO ORDERS. It reads, it computes, it writes one JSON file
+# to config/plans/, and it prints. The only path from that file to the outbox
+# is a human running --approve-plan. Nothing here touches config/outbox/, and
+# the whole lane runs OUTSIDE RTH only: during the session the daemon's job is
+# to execute what was already approved, not to think up new trades.
+
+
+def plan_dir(repo_root: Path | None = None) -> Path:
+    return (repo_root or REPO_ROOT).joinpath(*PLAN_DIR)
+
+
+def plan_file_path(repo_root: Path | None = None, now: datetime | None = None) -> Path:
+    """config/plans/<YYYY-MM-DD>_<HHMM>.json, from the cycle's own clock.
+
+    Minute resolution, so a hand-run and a daemon tick in the same minute write
+    the same path and the later one WINS. That is deliberate and harmless: both
+    are read-only proposals derived from the same rules, and a plan is only
+    ever consumed by a human naming it explicitly.
+    """
+    t = now_et(now)
+    return plan_dir(repo_root) / (t.strftime("%Y-%m-%d_%H%M") + ".json")
+
+
+def size_candidate(candidate: dict, rules: dict, equity: float | None) -> dict:
+    """Turn a strategy proposal into a share count. THE RISK LAW LIVES HERE.
+
+    The strategy proposes prices and may hint a size; this function is the only
+    thing that decides how many shares, and it uses the SAME primitives the
+    outbox gate will re-apply minutes later — `clip_qty` with `risk.risk_pct`,
+    and `ticket_notional_cap`. Sizing here with the gate's own tools is what
+    keeps the planner from writing tickets that die at their own gate.
+
+    Returns {"qty": int, ...}; qty 0 carries `reason`, which is the string the
+    plan file records as the decision. `qty_hint` can only shrink the result.
+    """
+    limit = _f(candidate.get("limit"))
+    stop = _f(candidate.get("stop"))
+    out: dict = {"qty": 0, "limit": limit, "stop": stop, "equity": equity}
+    if limit is None or stop is None or limit <= 0 or stop <= 0:
+        out["reason"] = "candidate_prices_unusable"
+        return out
+    if stop >= limit:
+        out["reason"] = "stop_not_below_limit"
+        return out
+    if equity is None or equity <= 0:
+        out["reason"] = "equity_unknown"
+        return out
+    cfg = _risk(rules)
+    out["risk_pct"] = cfg["risk_pct"]
+    per_share = limit - stop
+    qty = int((equity * cfg["risk_pct"]) // per_share)
+    cap_notional = ticket_notional_cap(rules, equity)
+    out["max_ticket_notional"] = cap_notional
+    if cap_notional is None:
+        out["reason"] = "notional_cap_uncomputable"
+        return out
+    qty = min(qty, int(cap_notional // limit))
+    hint = candidate.get("qty_hint")
+    if isinstance(hint, int) and not isinstance(hint, bool) and hint > 0:
+        qty = min(qty, hint)
+    # clip_qty is the authority, not a second opinion: it is the exact call the
+    # gate makes, so a ticket this planner writes cannot exceed the clip.
+    qty = clip_qty(qty, limit, stop, equity, cfg["risk_pct"])
+    if qty <= 0:
+        out["reason"] = "qty_clipped_to_zero"
+        return out
+    out["qty"] = qty
+    out["notional"] = round(qty * limit, 4)
+    out["risk_dollars"] = round(qty * per_share, 4)
+    return out
+
+
+def build_plan(
+    rules: dict,
+    book: dict,
+    repo_root: Path | None = None,
+    now: datetime | None = None,
+    rules_path: str = "",
+) -> dict:
+    """Read-only pass over LIVE_UNIVERSE. Returns the plan dict; writes nothing.
+
+    Iterates the MODULE constant LIVE_UNIVERSE, minus PROTECT_ONLY — not
+    `rules["universe"]`. The outbox gate checks the module constant, so a
+    planner honouring the rules field could emit a ticket that dies at its own
+    gate with `not_in_live_universe`. One universe, one answer.
+    """
+    t_now = now_et(now)
+    p = strategy.params(rules)
+    equity = _f(book.get("equity"))
+    box = risk_box(rules, book)
+    stamp = t_now.strftime("%Y%m%d-%H%M")
+    plan: dict = {
+        "schema": "temple_flow_plan_v1",
+        "planned_at": t_now.isoformat(),
+        "planner": "temple_flow_wire.build_plan",
+        "strategy_module": "temple_flow_strategy",
+        "strategy_params": p,
+        "rules_path": rules_path,
+        "equity": equity,
+        "in_rth": False,
+        "book_source": book.get("source"),
+        "coverage": {
+            "quotes_ok": book_leg_proven(book, "quotes"),
+            "orders_ok": book_leg_proven(book, "orders"),
+            "history_ok": {},
+        },
+        "data_as_of": {"quotes": book.get("quotes_as_of"), "history": {}},
+        "risk_box": {"ok": box["ok"], "reasons": box["reasons"], "opens": box["opens"]},
+        "symbols": {},
+        "candidates": [],
+        "note": (
+            "READ-ONLY PROPOSAL. The planner places no orders and never writes "
+            "to config/outbox/. Approve one candidate with: "
+            "temple_flow_wire.py --approve-plan <this file> <ticket id>"
+        ),
+    }
+
+    for sym in LIVE_UNIVERSE:
+        if sym in PROTECT_ONLY:
+            continue
+        entry: dict = {"decision": "none", "reason": "", "ticket": None}
+
+        # 1. quotes. No live price, no idea — and a blind quotes leg is the
+        #    fail-open direction (every price test below only fires when `last`
+        #    is known), so it is answered before anything is fetched.
+        if not book_leg_proven(book, "quotes") or last_price(book, sym) is None:
+            entry["reason"] = "quotes_unproven"
+            entry["features"] = compute_features(sym, book, {}, rules)
+            plan["symbols"][sym] = entry
+            continue
+
+        # 2. history. Coverage stated, never inferred from an empty list.
+        history = fetch_daily_history(sym, HISTORY_DAYS)
+        plan["coverage"]["history_ok"][sym] = bool(history.get("history_ok"))
+        plan["data_as_of"]["history"][sym] = history.get("as_of")
+        features = compute_features(sym, book, history, rules)
+        entry["features"] = features
+        if not history.get("history_ok"):
+            entry["reason"] = "history_unproven"
+            entry["history_note"] = history.get("note")
+            plan["symbols"][sym] = entry
+            continue
+        if features["bars"] < MIN_HISTORY_BARS:
+            # A DIFFERENT FACT from history_unproven: the read succeeded and
+            # the answer is "not enough sessions to judge". Never merge them.
+            entry["reason"] = "insufficient_history"
+            entry["bars_needed"] = MIN_HISTORY_BARS
+            plan["symbols"][sym] = entry
+            continue
+
+        # 3. the strategy seam. checks are recorded either way, so a plan says
+        #    WHY it declined and not merely that it did.
+        checks = {}
+        if hasattr(strategy, "check_conditions"):
+            checks = strategy.check_conditions(sym, features, rules)
+            entry["checks"] = checks
+        candidate = strategy.evaluate(sym, features, rules)
+        if not candidate:
+            failed = sorted(k for k, v in (checks or {}).items() if not v)
+            entry["reason"] = "strategy_declined"
+            entry["failed_checks"] = failed
+            plan["symbols"][sym] = entry
+            continue
+        entry["rationale"] = candidate.get("rationale")
+
+        # 4. sizing, by the gate's own primitives.
+        sized = size_candidate(candidate, rules, equity)
+        entry["sizing"] = sized
+        if sized["qty"] <= 0:
+            entry["reason"] = sized.get("reason") or "qty_clipped_to_zero"
+            plan["symbols"][sym] = entry
+            continue
+
+        limit = float(sized["limit"])
+        stop = float(sized["stop"])
+        cap = _f(features.get("cap"))
+        last = float(features["last"])
+        drift = float(p["max_drift_pct"])
+        # FLOORED to the tick, never rounded: this is a MAXIMUM, and rounding a
+        # maximum up loosens it by a cent on nothing but a float's binary
+        # representation (18.50 * 1.01 = 18.685, which is not exactly 18.685).
+        # Floor is deterministic and errs toward refusing the trade.
+        max_last = strategy.floor_to_tick(last * (1.0 + drift))
+        if cap is not None:
+            max_last = min(max_last, cap)
+        ticket_id = "TF-PLAN-" + stamp + "-" + sym
+        entry["decision"] = "candidate"
+        entry["reason"] = "strategy_candidate"
+        entry["ticket"] = {
+            # the exact outbox dialect the loader reads, with the two fields
+            # that keep it INERT until a human changes them.
+            "id": ticket_id,
+            "status": "proposed",
+            "risk_stamped": False,
+            "action": "place_gtc_bracket",
+            "symbol": sym,
+            "side": "BUY",
+            "stop_side": "SELL",
+            "qty": int(sized["qty"]),
+            "limit": limit,
+            "stop": stop,
+            "planned_at": plan["planned_at"],
+            "source_plan": plan_file_path(repo_root, t_now).name,
+            "validity": {
+                "max_last": max_last,
+                "min_sma20_over_sma50": True,
+                "max_data_age_minutes": float(p["max_data_age_minutes"]),
+                "planned_last": last,
+                "planned_atr": features.get("atr14"),
+                "rationale": candidate.get("rationale"),
+            },
+        }
+        plan["candidates"].append(ticket_id)
+        plan["symbols"][sym] = entry
+
+    return plan
+
+
+def write_plan_file(
+    plan: dict, repo_root: Path | None = None, now: datetime | None = None
+) -> Path | None:
+    """Atomic write to config/plans/. temp + os.replace, same directory.
+
+    A half-written plan a human reads at 07:00 is worse than no plan, and the
+    temp file stays on the same filesystem so os.replace is atomic. Returns the
+    path, or None after logging the failure — a failed plan write must never
+    look like a plan that said nothing.
+    """
+    dest = plan_file_path(repo_root, now)
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dest.with_suffix(dest.suffix + ".tmp")
+        tmp.write_text(json.dumps(plan, indent=2, sort_keys=True, default=str))
+        os.replace(tmp, dest)
+        return dest
+    except Exception as e:
+        logj(
+            {
+                "op": "plan_file",
+                "execute": "write_failed",
+                "error": type(e).__name__,
+                "path": str(dest),
+                "sent": False,
+                "mutated": False,
+                "dry_run": True,
+            }
+        )
+        return None
+
+
+def run_planning_pass(
+    rules: dict,
+    book: dict,
+    repo_root: Path | None = None,
+    now: datetime | None = None,
+    rules_path: str = "",
+) -> list:
+    """Build the plan, write it, print one legible line per symbol.
+
+    Returns the log lines so run_cycle can hand them back with the rest of the
+    cycle. Every line carries `sent: False` and `mutated: False` LITERALLY —
+    this lane cannot post, and a caller iterating the cycle's output must be
+    able to assert that without a missing key reading as None.
+    """
+    plan = build_plan(rules, book, repo_root=repo_root, now=now, rules_path=rules_path)
+    lines: list = []
+    for sym in LIVE_UNIVERSE:
+        entry = plan["symbols"].get(sym)
+        if entry is None:
+            continue
+        f = entry.get("features") or {}
+        t = entry.get("ticket") or {}
+        lines.append(
+            {
+                "op": "plan",
+                "symbol": sym,
+                "decision": entry.get("decision"),
+                "reason": entry.get("reason"),
+                "last": f.get("last"),
+                "cap": f.get("cap"),
+                "sma20": f.get("sma20"),
+                "sma50": f.get("sma50"),
+                "sma20_slope": f.get("sma20_slope"),
+                "sma50_slope": f.get("sma50_slope"),
+                "atr14": f.get("atr14"),
+                "ret5d": f.get("ret5d"),
+                "dist_to_sma20_pct": f.get("dist_to_sma20_pct"),
+                "bars": f.get("bars"),
+                "history_ok": f.get("history_ok"),
+                "ticket_id": t.get("id"),
+                "qty": t.get("qty"),
+                "limit": t.get("limit"),
+                "stop": t.get("stop"),
+                "failed_checks": entry.get("failed_checks"),
+                "note": "read_only_proposal_no_order_placed",
+                "sent": False,
+                "mutated": False,
+                "dry_run": True,
+            }
+        )
+    path = write_plan_file(plan, repo_root=repo_root, now=now)
+    lines.append(
+        {
+            "op": "plan_file",
+            "execute": "written" if path else "write_failed",
+            "path": str(path) if path else None,
+            "planned_at": plan["planned_at"],
+            "candidates": plan["candidates"],
+            "note": "approve with --approve-plan <file> <ticket id>",
+            "sent": False,
+            "mutated": False,
+            "dry_run": True,
+        }
+    )
+    for line in lines:
+        logj(line)
+    return lines
+
+
 # Ticket outcomes that clear the outbox into done/. Everything else moves to
 # failed/ — with ONE exception, `deferred`, which is the only outcome that
 # leaves the ticket where it is. See _TICKET_WAIT and WAIT_REFUSALS.
@@ -1584,7 +2320,32 @@ def run_cycle(
         executed.append(e)
     if not planned:
         logj(_action("skip", None, "no_planned_actions"))
-    return [header] + outbox_results + executed
+
+    # --- off-hours planning lane, LAST and OUTSIDE RTH ONLY ---
+    # Anthony 2026-09-03 07:49 ET. Last so it can never delay the protect lane
+    # or an approved ticket; outside RTH only so the daemon spends the session
+    # executing what a human already approved rather than inventing trades.
+    # Wrapped like every other lane: a planner exception must not be able to
+    # retro-actively poison a cycle that already posted correctly.
+    plan_results: list = []
+    if not rth:
+        try:
+            plan_results = run_planning_pass(
+                rules, book, repo_root=repo_root, now=now, rules_path=rules_path
+            )
+        except Exception as exc:
+            plan_results = [
+                {
+                    "op": "plan",
+                    "execute": "exception",
+                    "error": type(exc).__name__,
+                    "sent": False,
+                    "mutated": False,
+                    "dry_run": True,
+                }
+            ]
+            logj(plan_results[0])
+    return [header] + outbox_results + executed + plan_results
 
 
 def cmd_status(rules: dict, book: dict, broker_note: str, rules_path: str) -> int:
@@ -1945,6 +2706,8 @@ def gate_outbox_ticket(
         risk box (breaker, peak-DD, max-opens)     WAIT
         arm                                        WAIT
         RTH                                        WAIT
+        validity re-evaluation (if the ticket
+          carries `validity`)                      WAIT then terminal
         last vs cap (through_cap_idea_dead)        terminal, evaluated LAST
 
     Two orderings inside that list are deliberate, not incidental:
@@ -1956,9 +2719,9 @@ def gate_outbox_ticket(
         03:00 on an overnight print, when the gate exists to say "the idea is
         dead in the session that is about to open", would be the wrong death.
 
-    TWO EXCEPTIONS TO "TERMINAL FIRST", STATED SO NOBODY READS THE LIST AS AN
-    ABSOLUTE. Both are WAITs sitting ahead of terminals, and both are
-    deliberate:
+    THREE EXCEPTIONS TO "TERMINAL FIRST", STATED SO NOBODY READS THE LIST AS
+    AN ABSOLUTE. All three are WAITs sitting ahead of terminals, and all three
+    are deliberate:
 
       1. `orders_unproven` runs ahead of the universe check (a terminal that
          needs no book at all). During a Schwab outage a ticket for a symbol
@@ -1977,6 +2740,25 @@ def gate_outbox_ticket(
          the equity gate: reordering gates on a live money wire to change the
          disposition of a low-reachability edge is a worse trade than
          documenting it, and deferring is the fail-safe direction anyway.
+      3. The `validity` block (2026-09-04) runs three WAITs — `quotes_unproven`,
+         `data_stale_refetch_next_cycle`,
+         `history_unproven_refetch_next_cycle` — ahead of its own terminal
+         `idea_stale_reevaluated`, for exactly the reason in exception 1: the
+         terminal verdict is a comparison against fresh data, so it CANNOT be
+         evaluated until the read proves itself. Refusing to re-decide on data
+         the daemon could not read is the whole point of the block. It also
+         sits ahead of `through_cap_idea_dead`, which for a validity ticket
+         therefore never fires: `validity.max_last` is the tighter bound and it
+         reports the planned-vs-now numbers, so one terminal with numbers beats
+         two terminals racing. Both are terminal, so the DISPOSITION is
+         identical either way — only the reason string changes.
+
+    ANTHONY, 2026-09-03 11:47 EDT, the directive the validity block exists for:
+    "if the trade doesn't go through when it was supposed to go through or when
+    it was planned, it should be reevaluate with updated data time sensitive
+    data". A ticket planned last night is an IDEA, not a permission. The
+    `validity` block is that idea's falsifier, carried in the ticket file, and
+    it runs at the moment of execution against a fresh read.
     """
     detail: dict = {}
 
@@ -2110,8 +2892,92 @@ def gate_outbox_ticket(
     if not rth:
         return "outside_rth", detail
 
+    # --- re-evaluation with fresh data (tickets carrying `validity`) ---
+    # Written INLINE rather than factored into a helper, on purpose: the
+    # refusal-classification tripwire scans this function's string literals, so
+    # a helper returning (reason, detail) would ship reasons the tripwire never
+    # sees. A tuple-returning helper here is the fail-open, not the tidy-up.
+    #
+    # A ticket without `validity` behaves exactly as it did before this block
+    # existed. That is the compatibility contract: the hand-written outbox
+    # ticket in AWAY_MODE.md still works, unchanged.
+    validity = t.get("validity")
+    if isinstance(validity, dict) and validity:
+        planned_last = _f(validity.get("planned_last"))
+        max_last = _f(validity.get("max_last"))
+        max_age = _f(validity.get("max_data_age_minutes"))
+        check = {
+            "planned_last": planned_last,
+            "planned_atr": _f(validity.get("planned_atr")),
+            "max_last": max_last,
+            "max_data_age_minutes": max_age,
+            "min_sma20_over_sma50": bool(validity.get("min_sma20_over_sma50")),
+        }
+        detail["reevaluation"] = check
+
+        # The price this whole block compares against must be a PROVEN read.
+        if not book_leg_proven(book, "quotes"):
+            check["failed"] = ["quotes_leg_unproven"]
+            return "quotes_unproven", detail
+        last_now = last_price(book, sym)
+        detail["last"] = last_now
+        check["last_now"] = last_now
+        if last_now is None:
+            check["failed"] = ["no_last_for_symbol"]
+            return "quotes_unproven", detail
+
+        # Freshness. `max_data_age_minutes` absent or unparseable is NOT a free
+        # pass: a validity block that cannot say how fresh its data must be
+        # cannot be re-evaluated, so it waits for a cycle whose ticket says.
+        age = quote_age_minutes(book, sym, now)
+        check["quote_age_minutes"] = None if age is None else round(age, 3)
+        if max_age is None or max_age <= 0:
+            check["failed"] = ["max_data_age_minutes_missing"]
+            return "data_stale_refetch_next_cycle", detail
+        if age is None or age > max_age:
+            check["failed"] = ["quote_age"]
+            return "data_stale_refetch_next_cycle", detail
+
+        # The idea's own bound, then the standing cap. Both terminal: the
+        # market moved past the trade a human approved, and re-approving is
+        # the human's call with fresh eyes, not the daemon's at 09:31.
+        if max_last is not None and last_now > max_last:
+            check["failed"] = ["last_above_max_last"]
+            return "idea_stale_reevaluated", detail
+        if entry_cap is not None and last_now > entry_cap:
+            check["failed"] = ["last_above_cap"]
+            return "idea_stale_reevaluated", detail
+
+        if check["min_sma20_over_sma50"]:
+            hist = fetch_daily_history(sym, HISTORY_DAYS)
+            check["history_ok"] = bool((hist or {}).get("history_ok"))
+            check["history_as_of"] = (hist or {}).get("as_of")
+            check["history_bars"] = (hist or {}).get("bars")
+            if not check["history_ok"]:
+                check["failed"] = ["history_refetch_failed"]
+                check["history_note"] = (hist or {}).get("note")
+                return "history_unproven_refetch_next_cycle", detail
+            p = strategy.params(rules)
+            closes = closes_of((hist or {}).get("candles") or [])
+            sma_fast_now = sma(closes, int(p["sma_fast"]))
+            sma_slow_now = sma(closes, int(p["sma_slow"]))
+            check["sma20_now"] = sma_fast_now
+            check["sma50_now"] = sma_slow_now
+            if sma_fast_now is None or sma_slow_now is None:
+                # Fetched, but too few bars to recompute the trend. A read that
+                # cannot answer is the same class as a read that failed.
+                check["failed"] = ["insufficient_history_for_trend"]
+                return "history_unproven_refetch_next_cycle", detail
+            if not sma_fast_now > sma_slow_now:
+                check["failed"] = ["trend_flipped_sma20_under_sma50"]
+                return "idea_stale_reevaluated", detail
+
+        check["verdict"] = "validity_holds"
+
     # Terminal, and last: it is the only terminal check that reads a quote, so
-    # it is answered by the session that is actually about to trade.
+    # it is answered by the session that is actually about to trade. For a
+    # `validity` ticket the block above has already bounded `last` more
+    # tightly, so this is the plain-ticket path.
     if book_leg_proven(book, "quotes"):
         last_now = last_price(book, sym)
         detail["last"] = last_now
@@ -2415,6 +3281,125 @@ def execute_outbox_ticket(
     return out
 
 
+def cmd_approve_plan(
+    plan_file: str,
+    ticket_id: str,
+    repo_root: Path | None = None,
+    now: datetime | None = None,
+) -> int:
+    """THE ONLY PATH FROM A PLAN TO THE OUTBOX. Offline; no broker call.
+
+    Copies exactly one candidate out of a plan file into
+    config/outbox/<id>.json with `status: approved`, `risk_stamped: true` and a
+    `human_approved_at` stamp. Safe to run from any Terminal at any hour: it
+    reads two files and writes one, it never resolves a book, it never needs
+    LIVE_OK, and it cannot place an order.
+
+    IT REFUSES, and each refusal is the safe direction:
+      * plan unreadable, or the id is not a CANDIDATE in that plan;
+      * the ticket's `validity` does not state `max_data_age_minutes` — a
+        window is not invented on a money path, the plan is regenerated;
+      * the plan is older than max_data_age_minutes x PLAN_STALE_MULTIPLIER.
+        A stale plan must be REGENERATED, not approved: its prices, its trend
+        and its ATR were true of a market that has moved on;
+      * the plan is stamped in the future (clock skew, or a hand-edited file);
+      * config/outbox/<id>.json already exists. Never clobber a ticket that may
+        already be waiting, stamped, or half-way through its own life.
+
+    `risk_stamped: true` here is a LOADER PRECONDITION, not a risk waiver.
+    Every gate in gate_outbox_ticket still runs on a fresh book, and the
+    `validity` block re-decides the idea against fresh data at execution.
+    """
+    root = repo_root or REPO_ROOT
+    t_now = now_et(now)
+    out: dict = {
+        "op": "approve_plan",
+        "plan_file": str(plan_file),
+        "ticket_id": str(ticket_id),
+        "sent": False,
+        "mutated": False,
+        "dry_run": True,
+    }
+
+    def _fail(why: str, **extra: Any) -> int:
+        out["execute"] = "refused"
+        out["reason"] = why
+        out.update(extra)
+        logj(out)
+        return 2
+
+    path = Path(plan_file).expanduser()
+    try:
+        plan = json.loads(path.read_text())
+    except Exception as e:
+        return _fail("plan_unreadable", error=type(e).__name__)
+    if not isinstance(plan, dict):
+        return _fail("plan_not_a_json_object")
+
+    found = None
+    for sym, entry in (plan.get("symbols") or {}).items():
+        if not isinstance(entry, dict):
+            continue
+        t = entry.get("ticket")
+        if not isinstance(t, dict):
+            continue
+        if str(t.get("id")) == str(ticket_id) and entry.get("decision") == "candidate":
+            found = t
+            out["symbol"] = sym
+            break
+    if found is None:
+        return _fail(
+            "ticket_not_a_candidate_in_this_plan",
+            candidates=plan.get("candidates"),
+        )
+
+    validity = found.get("validity")
+    max_age = _f(validity.get("max_data_age_minutes")) if isinstance(validity, dict) else None
+    if max_age is None or max_age <= 0:
+        return _fail("validity_missing_max_data_age_minutes")
+
+    try:
+        planned_at = _parse_ticket_time(plan.get("planned_at"))
+    except (ValueError, TypeError):
+        return _fail("plan_planned_at_not_iso", planned_at=plan.get("planned_at"))
+    age_minutes = (t_now - planned_at).total_seconds() / 60.0
+    limit_minutes = max_age * PLAN_STALE_MULTIPLIER
+    out["plan_age_minutes"] = round(age_minutes, 2)
+    out["max_plan_age_minutes"] = limit_minutes
+    if age_minutes < -1.0:
+        return _fail("plan_timestamp_in_the_future", planned_at=planned_at.isoformat())
+    if age_minutes > limit_minutes:
+        return _fail("plan_too_old_regenerate", planned_at=planned_at.isoformat())
+
+    dest = root / "config" / "outbox" / (str(ticket_id) + ".json")
+    if dest.exists():
+        return _fail("outbox_ticket_already_exists", path=str(dest))
+
+    approved = dict(found)
+    approved["status"] = "approved"
+    approved["risk_stamped"] = True
+    approved["human_approved_at"] = t_now.isoformat()
+    approved["approved_from_plan"] = str(path)
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dest.with_suffix(dest.suffix + ".tmp")
+        tmp.write_text(json.dumps(approved, indent=2, sort_keys=True))
+        os.replace(tmp, dest)
+    except Exception as e:
+        return _fail("outbox_write_failed", error=type(e).__name__, path=str(dest))
+
+    out["execute"] = "approved"
+    out["path"] = str(dest)
+    out["symbol"] = approved.get("symbol")
+    out["qty"] = approved.get("qty")
+    out["limit"] = approved.get("limit")
+    out["stop"] = approved.get("stop")
+    out["human_approved_at"] = approved["human_approved_at"]
+    out["note"] = "gates and validity re-run at execution; approval is not a waiver"
+    logj(out)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Temple Flow Act-loop wire (default dry-run)")
     p.add_argument("--status", action="store_true", help="read-only book/orders/quotes")
@@ -2424,8 +3409,23 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="POST when LIVE_OK + TEMPLE_FLOW_LIVE=1",
     )
+    p.add_argument(
+        "--approve-plan",
+        nargs=2,
+        metavar=("PLAN_FILE", "TICKET_ID"),
+        default=None,
+        help="copy one planned candidate into config/outbox/ as approved (offline)",
+    )
     p.add_argument("--rules", default="", help="optional rules JSON path")
     args = p.parse_args(argv)
+
+    # FIRST, before rules are loaded and before any book is resolved: approving
+    # a plan is an offline file copy. It must work with no broker on the
+    # machine, no LIVE_OK, and no standing_rules.json, from any Terminal.
+    if args.approve_plan:
+        return cmd_approve_plan(
+            args.approve_plan[0], args.approve_plan[1], repo_root=REPO_ROOT
+        )
 
     if args.rules:
         path = Path(args.rules).expanduser()

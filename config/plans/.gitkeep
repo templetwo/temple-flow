@@ -1,0 +1,6 @@
+# Off-hours plans written by scripts/temple_flow_wire.py (op=plan lane).
+# READ-ONLY PROPOSALS. Nothing here is an order and nothing here is approved.
+# Format: <YYYY-MM-DD>_<HHMM>.json — see runbooks/AWAY_MODE.md,
+# "Planning while the market is closed".
+# The only path from a plan to config/outbox/ is a human running:
+#   scripts/temple_flow_wire.py --approve-plan <plan file> <ticket id>

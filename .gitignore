@@ -27,6 +27,8 @@ config/mv_session.json
 config/outbox/*.json
 config/outbox/done/
 config/outbox/failed/
+# Off-hours plan files (read-only proposals, regenerated every off-hours cycle)
+config/plans/*.json
 config/cancel_refusals.json
 logs/schwab_account_snapshot.json
 logs/schwab_oauth_reauth.log
