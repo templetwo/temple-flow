@@ -163,19 +163,26 @@ dies at 03:00 instead of parking overnight to be killed at the open.
     A tripped box is a state of the day and the day turns over, so it **waits**.
 11. **Armed** — `arm_required` honoured against the live session arm file. **Waits.**
 12. **RTH** — weekday 09:00–16:00 ET, same clock the planner uses. **Waits.**
-13. **No chase through cap, `last` half** — if quotes are proven, `last` must be
+13. **Re-evaluation with fresh data** — only for a ticket carrying `validity`
+    (see "Planning while the market is closed" below). Quotes proven, then
+    data freshness (both **wait**), then the idea itself re-checked against a
+    live quote and a fresh daily history (**terminal**,
+    `idea_stale_reevaluated`). A ticket without `validity` skips this entirely
+    and behaves exactly as it did before 2026-09-04.
+14. **No chase through cap, `last` half** — if quotes are proven, `last` must be
     at or under the cap too. Terminal, but evaluated **last** because it is the
     one terminal check that reads a live quote: killing a ticket at 03:00 on an
     overnight print is the wrong death for a gate that means "the idea is dead
-    in the session about to open".
-14. **In-cycle bookkeeping** — the book is fetched once per cycle, so a placed
+    in the session about to open". For a `validity` ticket step 13 has already
+    bounded `last` more tightly, so this is the plain-ticket path.
+15. **In-cycle bookkeeping** — the book is fetched once per cycle, so a placed
     order is recorded into the in-memory book immediately. Two approved tickets
     for the same symbol in one cycle result in one order: the second sees the
     first and is refused. Without this, guard 9 and the `max_opens` box would
     be blind precisely when two tickets arrive together. A **cancel** is
     recorded the same way, so the planner cannot re-fire a DELETE on an order
     the outbox just canceled in the same tick.
-15. **Cancel tickets** — same shape, terminal first: the `order_id` must be a
+16. **Cancel tickets** — same shape, terminal first: the `order_id` must be a
     working order in the book (terminal), on a live-universe symbol (terminal),
     and the DELETE only fires inside RTH (**waits**).
 
@@ -201,6 +208,10 @@ treated as unproven.
 | `cancel_symbol_not_in_live_universe` (at execute) | Boundary copy of the planner's universe restriction. |
 | `ticket_expired` | The ticket's own `expires_at` has passed. Terminal. |
 | `ticket_wait_exceeded` | The ticket has waited longer than `outbox.max_wait_days` from `first_seen_at` (measured as elapsed days; the log carries `waited_days`). Terminal. Only ever seen when that rules field is set. |
+| `quotes_unproven` (outbox ticket) | The ticket carries `validity` and the quotes leg did not prove, or there is no `last` for the symbol. There is no re-evaluating an idea without a price. **WAITS.** |
+| `data_stale_refetch_next_cycle` | The ticket carries `validity` and the price behind it is older than `validity.max_data_age_minutes` — or the book never said when it was true, which is the same thing. **WAITS.** The log carries `quote_age_minutes`. |
+| `history_unproven_refetch_next_cycle` | The daily-history refetch failed, or came back with too few bars to recompute the 20/50 SMAs. A read that cannot answer is the same class as a read that failed. **WAITS.** |
+| `idea_stale_reevaluated` | The re-evaluation ran and the idea is broken: `last` above `validity.max_last`, `last` above the cap, or the 20-day SMA no longer above the 50-day. **Terminal**, with `planned_last` vs `last_now` (and `sma20_now` / `sma50_now`) in the gate detail. |
 
 **Precedence, when more than one applies:** the execute boundary checks
 eligibility *first*, so a cancel on a hint book reports `book_not_schwab_read`
@@ -252,7 +263,9 @@ the HTTP status of each failed leg.
 >
 > **WAIT — the ticket stays in `config/outbox/` and is re-gated next cycle:**
 > `outside_rth`, `arm_required`, `orders_unproven`, `book_missing`,
-> `book_not_schwab_read`, `equity_unknown_cannot_size`, `new_risk_blocked`.
+> `book_not_schwab_read`, `equity_unknown_cannot_size`, `new_risk_blocked`,
+> and the three re-evaluation reads: `quotes_unproven`,
+> `data_stale_refetch_next_cycle`, `history_unproven_refetch_next_cycle`.
 > Nothing about the ticket is wrong. It is well-formed, inside the universe and
 > inside every cap, and the only obstacle is the clock, the arm file, a degraded
 > broker read, or the risk box. A later cycle can honestly find each of these
@@ -273,8 +286,9 @@ the HTTP status of each failed leg.
 > risk clip, notional over cap or uncomputable, an existing entry, the one-sell
 > law, already long, a duplicate, a cancel target that is not working, a cancel
 > on a symbol outside the universe, `cancel_skipped_refused_today`,
-> `rules_missing`, `ticket_unreadable`, an unknown action. Waiting on any of
-> these is waiting forever.
+> `rules_missing`, `ticket_unreadable`, `idea_stale_reevaluated`, an unknown
+> action. Waiting on any of these is waiting forever — or, for
+> `idea_stale_reevaluated`, waiting on a trade nobody has re-approved.
 >
 > **A waiting ticket carries no permission forward.** It is re-gated from scratch
 > every cycle against a fresh book. If the world changed while it waited — a
@@ -314,6 +328,253 @@ Example ticket (live-universe symbol, inside the caps):
 }
 ```
 
+## Planning while the market is closed
+
+> **Anthony, 2026-09-03 07:49 EDT:** *"on market off hours, there should be more
+> strategy being defined and planning on the trends"*
+>
+> **Anthony, 2026-09-03 11:47 EDT:** *"if the trade doesn't go through when it
+> was supposed to go through or when it was planned, it should be reevaluate
+> with updated data time sensitive data"*
+>
+> **Anthony, 2026-09-04 19:18 EDT:** *"Go"* — built on Schwab quotes and Schwab
+> daily price history, per HQ's default data source.
+
+**THE PLANNER NEVER PLACES AN ORDER.** It reads quotes and daily history, it
+computes a small feature set, it writes one JSON file to `config/plans/`, and it
+prints. It has no broker POST, no cancel, and it never writes into
+`config/outbox/`. The only path from a plan to the outbox is a human running
+`--approve-plan`. Read that sentence twice before changing anything in this
+lane.
+
+### The loop
+
+```
+  off-hours cycle          Anthony                execution cycle
+  ---------------          -------                ---------------
+  plan  ─────────►  config/plans/<date>_<time>.json
+                           │
+                           │  --approve-plan <plan file> <ticket id>
+                           ▼
+                    config/outbox/<id>.json  ──►  re-evaluated at execution
+                    (approved, risk_stamped)      (validity, fresh data)
+                                                  │
+                                                  ├─ holds  → POST
+                                                  ├─ stale read → WAIT
+                                                  └─ idea broken → failed/
+```
+
+Every step is gated, and none of the gates trusts the step before it. The plan
+is a proposal. The approval is a human. The execution re-decides.
+
+### When it runs
+
+`run_cycle` runs the planning pass **only outside RTH** (`in_rth()` false:
+weekends, and weekdays before 09:00 or at/after 16:00 ET), **after** the outbox
+lane and the planner lane, so it can never delay an approved ticket or a protect
+stop. Inside RTH the daemon's job is to execute what a human already approved,
+not to think up new trades. A planner exception is caught and logged like every
+other lane; it cannot poison a cycle that already posted correctly.
+
+### The default strategy
+
+`scripts/temple_flow_strategy.py`, function `evaluate(symbol, features, rules)`.
+**That file is the seam Grok's spec replaces** — the contract is documented at
+the top of it, and the load-bearing half is this: **a strategy may only propose.
+All sizing and every risk cap stay in the wire**, so a replacement strategy
+cannot widen risk.
+
+A candidate is proposed only when ALL of these hold:
+
+| Condition | Why |
+| --- | --- |
+| `last` at or under `entries[sym].cap` | the 2026-08-28 no-chase law, applied at the idea stage |
+| a cap is configured at all | no cap, no idea. IBIT's cap is `null` in the example rules, so IBIT proposes nothing |
+| 20-day SMA **above** 50-day SMA | trend stack |
+| both SMA slopes **positive** | per-day change over 5 sessions, in dollars |
+| `last` at or above the 20-day SMA | continuation, not a falling knife |
+| `last` no more than `max_extension_pct` (4%) above it | a bounded band; further out is a chase |
+| no position and no working entry on the symbol | nothing to add to |
+
+Prices and size:
+
+- **limit** = `last` rounded to the cent, then floored to the cap. Never above the cap.
+- **stop** = `max(entries[sym].stop, last - 2 x ATR14)`, floored to the cent. The
+  rules stop is a **floor** under the ATR stop, never a ceiling on it. Refused
+  if it does not land strictly below the limit.
+- **qty** = the wire's own risk primitives, the same ones the outbox gate
+  re-applies: `clip_qty` against `risk.risk_pct`, then the
+  `risk.max_ticket_notional_pct` notional cap. On the live book that is what
+  makes 11 ETHA @ 18.50 the size rather than 28.
+
+Features recorded for every symbol, candidate or not: `sma20`, `sma50`, both
+slopes, `atr14` (the **simple** 14-period mean of true range, not Wilder),
+`ret5d` (from closes only, so it does not move within a session), `last_vs_cap`,
+`dist_to_sma20_pct`, `bars`, plus the book state (`position_qty`,
+`has_working_entry`) and both coverage flags.
+
+Tunable in `config/standing_rules.json` under `"strategy"` — every key optional,
+defaults in `temple_flow_strategy.PARAMS`: `sma_fast` 20, `sma_slow` 50,
+`slope_lookback` 5, `atr_period` 14, `max_extension_pct` 0.04, `atr_stop_mult`
+2.0, `max_drift_pct` 0.01, `max_data_age_minutes` 60.
+
+### The plan file
+
+`config/plans/<YYYY-MM-DD>_<HHMM>.json`, written atomically (temp + `os.replace`
+in the same directory) and git-ignored. Minute resolution: a hand-run and a
+daemon tick in the same minute write the same path and the later one **wins**.
+That is fine — both are read-only proposals from the same rules — but know it
+rather than discover it.
+
+```jsonc
+{
+  "schema": "temple_flow_plan_v1",
+  "planned_at": "2026-09-03T20:00:00-04:00",     // ET ISO, the cycle's own clock
+  "equity": 596.86,
+  "in_rth": false,
+  "book_source": "schwab_read",
+  "strategy_module": "temple_flow_strategy",
+  "strategy_params": { "sma_fast": 20, "...": "..." },
+  "coverage": {                                   // stated, never inferred
+    "quotes_ok": true,
+    "orders_ok": true,
+    "history_ok": { "ETHA": true, "IBIT": true }
+  },
+  "data_as_of": {                                 // what the numbers were true of
+    "quotes": "2026-09-03T20:00:00-04:00",
+    "history": { "ETHA": "2026-09-03T20:00:01-04:00" }
+  },
+  "risk_box": { "ok": true, "reasons": [], "opens": 2 },
+  "symbols": {
+    "ETHA": {
+      "decision": "candidate",                    // or "none"
+      "reason": "strategy_candidate",             // or why there is none
+      "features": { "...": "..." },
+      "checks":   { "...": true },                // every named condition
+      "sizing":   { "qty": 11, "risk_dollars": 5.72, "notional": 203.5 },
+      "rationale": "ETHA: sma20 ... > sma50 ..., both rising ...",
+      "ticket": {                                 // READY TO APPROVE, INERT
+        "id": "TF-PLAN-20260903-2000-ETHA",
+        "status": "proposed",                     // NOT "approved"
+        "risk_stamped": false,                    // NOT true
+        "action": "place_gtc_bracket",
+        "symbol": "ETHA", "side": "BUY", "stop_side": "SELL",
+        "qty": 11, "limit": 18.50, "stop": 17.98,
+        "planned_at": "2026-09-03T20:00:00-04:00",
+        "source_plan": "2026-09-03_2000.json",
+        "validity": { "...": "..." }              // see below
+      }
+    },
+    "IBIT": { "decision": "none", "reason": "strategy_declined",
+              "failed_checks": ["cap_known", "last_at_or_under_cap"],
+              "ticket": null }
+  },
+  "candidates": ["TF-PLAN-20260903-2000-ETHA"]
+}
+```
+
+The ticket is written in the **exact outbox dialect the loader reads**, with the
+two fields that keep it inert: `status: "proposed"` and `risk_stamped: false`.
+Dropped into `config/outbox/` unchanged it is ignored, because the loader wants
+`approved` + `true`.
+
+**Reasons a symbol produces no candidate**, and they are not interchangeable:
+
+| `reason` | Means |
+| --- | --- |
+| `quotes_unproven` | the quotes leg failed, or there is no `last` for the symbol. No history is even fetched. |
+| `history_unproven` | the daily-history call failed. `coverage.history_ok[sym]` is `false`; the note carries the HTTP status. |
+| `insufficient_history` | the call **succeeded** and returned fewer than 55 bars (50 for the slow SMA + 5 for its slope). A different fact from `history_unproven` — never merge them. |
+| `strategy_declined` | the strategy said no. `failed_checks` names every condition that did not hold. |
+| `qty_clipped_to_zero` / `stop_not_below_limit` / `notional_cap_uncomputable` / `equity_unknown` | the idea was fine and the wire could not size it. |
+
+### Housekeeping, stated rather than discovered
+
+Two costs of this lane, both small and both yours to bound if you want them
+bounded:
+
+- **Plan files accumulate.** The daemon ticks every 900s around the clock, so a
+  weeknight writes roughly 60 plan files and a weekend writes several hundred.
+  They are git-ignored and a few KB each. Nothing prunes them, on purpose — a
+  daemon that deletes files on a money-adjacent repo is a bigger risk than a
+  directory that grows. `rm config/plans/*.json` by hand whenever you like; the
+  wire holds no state about them, and an approved ticket carries everything it
+  needs in its own file.
+- **Two extra Schwab reads per off-hours cycle**, one `pricehistory` call per
+  live-universe symbol. Read-only, and skipped entirely when the quotes leg did
+  not prove.
+
+### Approving a plan — the only door
+
+```bash
+cd ~/temple-flow
+scripts/temple_flow_wire.py --approve-plan config/plans/2026-09-03_2000.json TF-PLAN-20260903-2000-ETHA
+```
+
+Offline. No broker call, no book resolved, no `LIVE_OK`, no `TEMPLE_FLOW_LIVE`.
+Safe to run from any Terminal at any hour. It copies that one candidate to
+`config/outbox/<id>.json` with `status: "approved"`, `risk_stamped: true` and a
+`human_approved_at` ET stamp, and prints one `op=approve_plan` line. Exit 0 on
+success, 2 on any refusal.
+
+**`risk_stamped: true` is a loader precondition, not a risk waiver.** The outbox
+is not a side door around the standing rules and this new door is not either:
+every gate in the list above still runs on a fresh book, and the `validity` block
+re-decides the idea at execution.
+
+It **refuses** (exit 2, nothing written) when:
+
+- the plan file is unreadable, or the id is not a **candidate** in that plan;
+- the ticket's `validity` does not state `max_data_age_minutes`. No window is
+  invented on a money path;
+- **the plan is stale**: older than `max_data_age_minutes` x 24. With the default
+  60 minutes that is a **24-hour approval window** — plan overnight, approve in
+  the morning. Past it the plan is **regenerated, not approved**: its prices, its
+  trend and its ATR were true of a market that has moved on;
+- the plan is stamped in the future (clock skew or a hand-edited file);
+- `config/outbox/<id>.json` already exists. It never clobbers a ticket that may
+  already be waiting or stamped.
+
+### The `validity` contract — re-evaluation at execution
+
+Every planned ticket carries a `validity` object. It is the idea's **falsifier**,
+carried in the ticket file, and it runs inside `gate_outbox_ticket` at the moment
+of execution — which for an overnight plan is hours after a human approved it.
+
+```json
+"validity": {
+  "max_last": 18.68,
+  "min_sma20_over_sma50": true,
+  "max_data_age_minutes": 60.0,
+  "planned_last": 18.50,
+  "planned_atr": 0.26,
+  "rationale": "ETHA: sma20 ... > sma50 ..., both rising ..."
+}
+```
+
+| Field | Checked how |
+| --- | --- |
+| `max_data_age_minutes` | the **older** of two clocks: when the daemon read the quotes leg (`quotes_as_of`) and Schwab's own `quoteTime`/`tradeTime` for that symbol. Older than this, or unknowable, and the ticket **waits**. |
+| `max_last` | fresh `last` must be at or under it. Floored to the cent from `planned_last x (1 + max_drift_pct)`, capped by the entry cap. Over it and the ticket is **terminal**. |
+| `min_sma20_over_sma50` | when true, the daily history is **refetched** and the 20/50 SMAs recomputed. A failed or too-thin refetch **waits**; a flipped trend is **terminal**. |
+| `planned_last` / `planned_atr` / `rationale` | carried for the log and for a human reading `failed/`. The gate detail prints planned vs now side by side. |
+
+**Why the read failures wait and the verdict dies.** A failed read says nothing
+about the idea, so it is re-gated next cycle — that is the 2026-09-03 "wait,
+don't die" rule unchanged. A failed **condition** says the market moved past the
+trade Anthony approved, and re-approving that is a human decision with fresh
+eyes, not a daemon's at 09:31.
+
+**Why the two freshness clocks.** The book is fetched once per cycle and handed
+straight to the gate, so the read stamp is always about zero minutes old and a
+gate built on it alone could never fire. Schwab's own quote time is what catches
+a halted symbol, a frozen feed or a pre-market read — the case Anthony's "time
+sensitive data" actually names. A gate that cannot fail is not a gate.
+
+**A ticket with no `validity` behaves exactly as it did before 2026-09-04.** The
+hand-written example ticket above still works, unchanged, and no history is
+fetched for it.
+
 ## What the daemon will do while you are away
 
 - Plan GTC ETHA pullback + attached stop when armed, under cap, inside 2.5% / 4 opens / breakers.
@@ -325,5 +586,12 @@ Example ticket (live-universe symbol, inside the caps):
 - Process outbox tickets under the guards above. A ticket refused for a timing
   or transient-state reason **stays in `config/outbox/`** and is re-gated every
   900s until it posts, dies on a terminal gate, or hits a bound you set.
+- **Outside RTH only:** run the read-only planning pass over ETHA / IBIT and
+  write `config/plans/<date>_<time>.json`. It proposes; it never places, and it
+  never writes to `config/outbox/`. Approving is Anthony's, by hand, with
+  `--approve-plan`.
+- Re-evaluate any approved ticket carrying `validity` against fresh quotes and a
+  fresh daily history at the moment of execution. Stale data waits; a broken
+  idea dies.
 - Print JSON lines. `sent` means an order was **placed**; a cancel reports
   `execute: "canceled"` with `mutated: true` and leaves `sent` false.
