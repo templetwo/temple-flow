@@ -1397,7 +1397,14 @@ def _broker_auth() -> dict:
     if not broker_available():
         return {"ok": False, "headers": {}, "base": "", "note": "broker not on this machine"}
     try:
-        sys.path.insert(0, str(BROKER_ROOT))
+        # Guarded, unlike fetch_book's unconditional insert: this runs once per
+        # symbol per off-hours cycle AND again on every validity refetch, so an
+        # unguarded insert grows sys.path without bound in any process that
+        # does not exit. The daemon is `--once` and exits each tick, so nothing
+        # accumulates in production today — the guard is what keeps that true
+        # if the wire is ever driven from a long-lived loop.
+        if str(BROKER_ROOT) not in sys.path:
+            sys.path.insert(0, str(BROKER_ROOT))
         os.chdir(BROKER_ROOT)
         try:
             from dotenv import load_dotenv  # type: ignore

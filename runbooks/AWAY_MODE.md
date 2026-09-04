@@ -418,6 +418,12 @@ defaults in `temple_flow_strategy.PARAMS`: `sma_fast` 20, `sma_slow` 50,
 `slope_lookback` 5, `atr_period` 14, `max_extension_pct` 0.04, `atr_stop_mult`
 2.0, `max_drift_pct` 0.01, `max_data_age_minutes` 60.
 
+**There is no `"strategy"` block in `config/standing_rules.example.json`, and
+that is not an omission.** Absent means "use `PARAMS`", which is the only
+source of these defaults — do not grep the example file for them and conclude
+the knobs do not exist. An unparseable value falls back to its default rather
+than raising, and `true` is rejected rather than read as `1`.
+
 ### The plan file
 
 `config/plans/<YYYY-MM-DD>_<HHMM>.json`, written atomically (temp + `os.replace`

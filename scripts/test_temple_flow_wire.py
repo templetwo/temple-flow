@@ -26,6 +26,7 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
 sys.path.insert(0, str(HERE))
 
+import temple_flow_strategy  # noqa: E402
 import temple_flow_wire  # noqa: E402
 from temple_flow_wire import (  # noqa: E402
     clip_qty,
@@ -3315,6 +3316,148 @@ class TestNewRefusalsAreClassified(unittest.TestCase):
             self.assertTrue(temple_flow_wire.refusal_is_wait(wait), wait)
         self.assertIn("idea_stale_reevaluated", temple_flow_wire.TERMINAL_REFUSALS)
         self.assertFalse(temple_flow_wire.refusal_is_wait("idea_stale_reevaluated"))
+
+
+class TestFeatureMathOnNonLinearData(unittest.TestCase):
+    """The feature math, checked against numbers computed BY HAND.
+
+    WHY THIS CLASS EXISTS, and it is the point: `synth_history` is a perfectly
+    linear ramp, on which the SMA slope equals the per-session step exactly —
+    so `assertAlmostEqual(sma20_slope, 0.038)` passes whether the lookback
+    window is right or off by a bar. A linear fixture CANNOT distinguish a
+    correct slope from an off-by-one one, and `fast_sma_rising` /
+    `slow_sma_rising` gate which trades get proposed at all.
+
+    The series below rises for 100 sessions and then goes FLAT for 5. On it the
+    two slopes differ from each other (0.085 vs 0.094) and from the underlying
+    step (0.10), so an off-by-one window changes the number and this test says
+    so. Worked by hand, and the arithmetic is in the comments so a reader can
+    redo it without running anything.
+
+    FAILS ON 8bd850d: temple_flow_wire has no sma / sma_slope / atr /
+    window_return — AttributeError on the first call.
+    """
+
+    #: 100 rising sessions (10.00 + 0.10 * i), then 5 flat at 19.90.
+    RAMP_THEN_FLAT = [round(10.0 + 0.10 * i, 10) for i in range(100)] + [19.9] * 5
+
+    def test_sma_is_the_mean_of_the_last_n(self):
+        # closes[85:105] = 15 rising values 18.50..19.90 (sum 288.00) + 5 x 19.90
+        #                = 387.50 / 20 = 19.375
+        self.assertAlmostEqual(
+            temple_flow_wire.sma(self.RAMP_THEN_FLAT, 20), 19.375, places=9
+        )
+        # closes[55:105] = 45 rising values 15.50..19.90 (sum 796.50) + 5 x 19.90
+        #                = 896.00 / 50 = 17.92
+        self.assertAlmostEqual(
+            temple_flow_wire.sma(self.RAMP_THEN_FLAT, 50), 17.92, places=9
+        )
+
+    def test_slope_on_a_non_linear_series_matches_hand_computation(self):
+        """THE DISCRIMINATING TEST. A ramp cannot catch an off-by-one; this can.
+
+        sma20 five sessions ago = mean(closes[80:100]) = mean(18.00..19.90)
+                                = 18.95, so slope20 = (19.375 - 18.95) / 5
+                                = 0.085
+        sma50 five sessions ago = mean(closes[50:100]) = mean(15.00..19.90)
+                                = 17.45, so slope50 = (17.92 - 17.45) / 5
+                                = 0.094
+
+        Both positive (the trend is still up), both DIFFERENT from each other
+        and from the 0.10 step. An off-by-one on the lookback window would read
+        0.066 for the fast slope, which this assertion rejects.
+        """
+        self.assertAlmostEqual(
+            temple_flow_wire.sma_slope(self.RAMP_THEN_FLAT, 20, 5), 0.085, places=9
+        )
+        self.assertAlmostEqual(
+            temple_flow_wire.sma_slope(self.RAMP_THEN_FLAT, 50, 5), 0.094, places=9
+        )
+        # and the flat tail does not make the slow SMA look flat: a 50-day
+        # average is still climbing five sessions after price stopped.
+        self.assertGreater(
+            temple_flow_wire.sma_slope(self.RAMP_THEN_FLAT, 50, 5),
+            temple_flow_wire.sma_slope(self.RAMP_THEN_FLAT, 20, 5),
+        )
+
+    def test_a_rolled_over_series_reads_as_falling(self):
+        """Positive control on sign: the same shape, rolled over, goes negative."""
+        rolled = self.RAMP_THEN_FLAT[:100] + [19.9 - 0.20 * i for i in range(1, 21)]
+        self.assertLess(temple_flow_wire.sma_slope(rolled, 20, 5), 0)
+
+    def test_short_windows_return_none_rather_than_a_number(self):
+        """Fail closed: an unknown feature must never look like a passing one."""
+        self.assertIsNone(temple_flow_wire.sma([1.0] * 19, 20))
+        self.assertIsNone(temple_flow_wire.sma_slope([1.0] * 24, 20, 5))
+        self.assertIsNone(temple_flow_wire.atr([{"high": 1, "low": 1, "close": 1}] * 14, 14))
+        self.assertIsNone(temple_flow_wire.window_return([1.0] * 5, 5))
+
+    def test_atr_is_the_simple_mean_of_true_range(self):
+        """Hand-computed on a widening range. Candle i: close 10.00, low 10.00,
+        high 10.00 + (i+1)/100. Every TR is therefore (i+1)/100, and the last
+        14 (i = 1..14) sum to 1.19, so ATR14 = 1.19 / 14 = 0.085.
+        """
+        candles = [
+            {"open": 10.0, "high": round(10.0 + (i + 1) / 100.0, 4), "low": 10.0, "close": 10.0}
+            for i in range(15)
+        ]
+        self.assertAlmostEqual(temple_flow_wire.atr(candles, 14), 0.085, places=9)
+
+    def test_atr_refuses_a_partial_bar_rather_than_averaging_around_it(self):
+        candles = [
+            {"open": 10.0, "high": 10.1, "low": 9.9, "close": 10.0} for _ in range(15)
+        ]
+        candles[-2] = {"open": 10.0, "high": None, "low": 9.9, "close": 10.0}
+        self.assertIsNone(temple_flow_wire.atr(candles, 14))
+
+    def test_window_return_reads_closes_not_the_live_quote(self):
+        self.assertAlmostEqual(
+            temple_flow_wire.window_return([10.0, 11.0, 12.0, 13.0, 14.0, 15.0], 5),
+            0.5,
+            places=9,
+        )
+
+    def test_the_planner_sees_the_same_numbers(self):
+        """End to end: the same series through fetch_daily_history -> features."""
+        candles = [
+            {
+                "datetime": 1_700_000_000_000 + i * 86_400_000,
+                "open": c,
+                "high": c + 0.12,
+                "low": c - 0.14,
+                "close": c,
+                "volume": 1000,
+            }
+            for i, c in enumerate(self.RAMP_THEN_FLAT)
+        ]
+        history = {
+            "symbol": "ETHA",
+            "candles": candles,
+            "history_ok": True,
+            "as_of": "2026-09-03T20:00:00-04:00",
+            "bars": len(candles),
+            "note": "hand-computed",
+        }
+        book = base_book(
+            in_rth=False,
+            armed=False,
+            quotes_as_of="2026-09-03T20:00:00-04:00",
+            quotes={"ETHA": {"last": 19.90}, "IBIT": {"last": 45.0}},
+        )
+        f = temple_flow_wire.compute_features("ETHA", book, history, example_rules())
+        self.assertAlmostEqual(f["sma20"], 19.375, places=9)
+        self.assertAlmostEqual(f["sma50"], 17.92, places=9)
+        self.assertAlmostEqual(f["sma20_slope"], 0.085, places=9)
+        self.assertAlmostEqual(f["sma50_slope"], 0.094, places=9)
+        self.assertEqual(f["bars"], 105)
+        # 19.90 against an 18.90 cap: through the cap, so no candidate even
+        # though every trend condition holds.
+        checks = temple_flow_strategy.check_conditions("ETHA", f, example_rules())
+        self.assertTrue(checks["trend_stack_fast_over_slow"])
+        self.assertTrue(checks["fast_sma_rising"])
+        self.assertTrue(checks["slow_sma_rising"])
+        self.assertFalse(checks["last_at_or_under_cap"])
+        self.assertIsNone(temple_flow_strategy.evaluate("ETHA", f, example_rules()))
 
 
 if __name__ == "__main__":
