@@ -209,9 +209,9 @@ treated as unproven.
 | `ticket_expired` | The ticket's own `expires_at` has passed. Terminal. |
 | `ticket_wait_exceeded` | The ticket has waited longer than `outbox.max_wait_days` from `first_seen_at` (measured as elapsed days; the log carries `waited_days`). Terminal. Only ever seen when that rules field is set. |
 | `quotes_unproven` (outbox ticket) | The ticket carries `validity` and the quotes leg did not prove, or there is no `last` for the symbol. There is no re-evaluating an idea without a price. **WAITS.** |
-| `data_stale_refetch_next_cycle` | The ticket carries `validity` and the price behind it is older than `validity.max_data_age_minutes` — or the book never said when it was true, which is the same thing. **WAITS.** The log carries `quote_age_minutes`. |
+| `data_stale_refetch_next_cycle` | The ticket carries `validity` and the price behind it is older than `validity.max_data_age_minutes`; or the book never said when it was true; or **Schwab's per-symbol stamp was absent or unparseable**, so only the inert read clock answered and freshness was never measured. All three are failed reads. **WAITS.** The log carries `quote_age_minutes`, `quote_time_seen`, `read_stamp_seen` and a `failed` label naming which. |
 | `history_unproven_refetch_next_cycle` | The daily-history refetch failed, or came back with too few bars to recompute the 20/50 SMAs. A read that cannot answer is the same class as a read that failed. **WAITS.** |
-| `idea_stale_reevaluated` | The re-evaluation ran and the idea is broken: `last` above `validity.max_last`, `last` above the cap, or the 20-day SMA no longer above the 50-day. **Terminal**, with `planned_last` vs `last_now` (and `sma20_now` / `sma50_now`) in the gate detail. |
+| `idea_stale_reevaluated` | The re-evaluation ran and the idea is broken: `last` **at or below the ticket's stop** (a bracket may never be posted through its own stop), `last` above `validity.max_last`, `last` below `validity.min_last`, `last` above the cap, or the 20-day SMA no longer above the 50-day. **Terminal**, with `planned_last` vs `last_now` (and `stop` / `sma20_now` / `sma50_now`) in the gate detail. |
 
 **Precedence, when more than one applies:** the execute boundary checks
 eligibility *first*, so a cancel on a hint book reports `book_not_schwab_read`
@@ -371,7 +371,7 @@ is a proposal. The approval is a human. The execution re-decides.
 
 `run_cycle` runs the planning pass **only outside RTH** (`in_rth()` false:
 weekends, and weekdays before 09:00 or at/after 16:00 ET), **after** the outbox
-lane and the planner lane, so it can never delay an approved ticket or a protect
+lane and the protect lane, so it can never delay an approved ticket or a protect
 stop. Inside RTH the daemon's job is to execute what a human already approved,
 not to think up new trades. A planner exception is caught and logged like every
 other lane; it cannot poison a cycle that already posted correctly.
@@ -488,7 +488,9 @@ Dropped into `config/outbox/` unchanged it is ignored, because the loader wants
 
 | `reason` | Means |
 | --- | --- |
+| `risk_box_blocked` | the risk box is not open (day breaker, peak-DD, or `max_opens`). Answered first and no history is fetched: `max_opens` is **not** day-scoped, so a saturated box is a structural state tomorrow does not clear, and a candidate that cannot execute today or tomorrow does not belong in front of a human. `risk_box` on the entry names the clauses. |
 | `quotes_unproven` | the quotes leg failed, or there is no `last` for the symbol. No history is even fetched. |
+| `orders_unproven` | the **orders** leg did not prove. `compute_features` sets `has_working_entry` from `existing_entry(...) if book_leg_proven(book, "orders") else None`, so an unproven leg yields `False` and `check_conditions` would compute `no_open_exposure = true` — the plan asserting "nothing is open on this symbol" on a cycle where the daemon **could not look**, inverting the contract's own "a missing feature makes its condition FALSE, never True". No wrong order could reach Schwab through it (`gate_outbox_ticket` refuses `orders_unproven` first); the cost was a false statement in the document the approval is given ON. Closed 2026-09-04. |
 | `history_unproven` | the daily-history call failed. `coverage.history_ok[sym]` is `false`; the note carries the HTTP status. |
 | `insufficient_history` | the call **succeeded** and returned fewer than 55 bars (50 for the slow SMA + 5 for its slope). A different fact from `history_unproven` — never merge them. |
 | `strategy_declined` | the strategy said no. `failed_checks` names every condition that did not hold. |
@@ -533,13 +535,29 @@ It **refuses** (exit 2, nothing written) when:
 - the plan file is unreadable, or the id is not a **candidate** in that plan;
 - the ticket's `validity` does not state `max_data_age_minutes`. No window is
   invented on a money path;
-- **the plan is stale**: older than `max_data_age_minutes` x 24. With the default
-  60 minutes that is a **24-hour approval window** — plan overnight, approve in
-  the morning. Past it the plan is **regenerated, not approved**: its prices, its
-  trend and its ATR were true of a market that has moved on;
+- **the plan is stale**: older than `MAX_PLAN_AGE_HOURS`, a **24-hour approval
+  window** — plan overnight, approve in the morning. Past it the plan is
+  **regenerated, not approved**: its prices, its trend and its ATR were true of a
+  market that has moved on. This window is its **own** parameter as of
+  2026-09-04; it used to be derived as `max_data_age_minutes x 24`, which meant
+  tightening the QUOTE-freshness bound from 60 to 15 minutes silently shrank the
+  approval window from 24h to 6h and a 20:00 plan could no longer be approved at
+  07:00. Two unrelated clocks, coupled backwards;
 - the plan is stamped in the future (clock skew or a hand-edited file);
+- the ticket id is not `[A-Za-z0-9][A-Za-z0-9._-]*`. The id becomes a filename,
+  and a hand-edited plan carrying a path separator would write outside the outbox;
 - `config/outbox/<id>.json` already exists. It never clobbers a ticket that may
   already be waiting or stamped.
+
+**It stamps `expires_at`** — 16:00 ET of the next session — unless the plan
+already carries one, in which case the human's own deadline stands. Before
+2026-09-04 an approved ticket was bounded by **price and trend only**, so an idea
+approved Monday could still post Thursday if the market happened back into the
+band. `expires_at` is already enforced terminally as `ticket_expired`, so this is
+a stamp on an existing gate, not new machinery. Sessions are counted as
+**weekdays** (the wire has no holiday calendar), so a holiday can shorten a
+ticket's life by one session — the safe direction: it expires, nothing posts, and
+you re-approve in one command.
 
 ### The `validity` contract — re-evaluation at execution
 
@@ -550,6 +568,7 @@ of execution — which for an overnight plan is hours after a human approved it.
 ```json
 "validity": {
   "max_last": 18.68,
+  "min_last": 18.32,
   "min_sma20_over_sma50": true,
   "max_data_age_minutes": 60.0,
   "planned_last": 18.50,
@@ -560,8 +579,10 @@ of execution — which for an overnight plan is hours after a human approved it.
 
 | Field | Checked how |
 | --- | --- |
-| `max_data_age_minutes` | the **older** of two clocks: when the daemon read the quotes leg (`quotes_as_of`) and Schwab's own `quoteTime`/`tradeTime` for that symbol. Older than this, or unknowable, and the ticket **waits**. |
+| `max_data_age_minutes` | the **older** of two clocks: when the daemon read the quotes leg (`quotes_as_of`) and Schwab's own `quoteTime`/`tradeTime` for that symbol. Older than this and the ticket **waits** — and so does a missing or unparseable Schwab stamp, because the read clock alone measures nothing (see below). |
 | `max_last` | fresh `last` must be at or under it. Floored to the cent from `planned_last x (1 + max_drift_pct)`, capped by the entry cap. Over it and the ticket is **terminal**. |
+| `min_last` | the **symmetric floor**, ceiled to the cent from `planned_last x (1 - max_drift_pct)` — the same `max_drift_pct`, so the band is one number in the rules file. Under it and the ticket is **terminal**. Optional: a hand-written ticket without it keeps only the stop floor below. |
+| the ticket's own `stop` | **not a validity field, and not optional.** Fresh `last` at or below the ticket's stop is **terminal**, always, for every `place_gtc_bracket` ticket carrying `validity`. See "the gap-down hole" below. |
 | `min_sma20_over_sma50` | when true, the daily history is **refetched** and the 20/50 SMAs recomputed. A failed or too-thin refetch **waits**; a flipped trend is **terminal**. |
 | `planned_last` / `planned_atr` / `rationale` | carried for the log and for a human reading `failed/`. The gate detail prints planned vs now side by side. |
 
@@ -571,11 +592,33 @@ don't die" rule unchanged. A failed **condition** says the market moved past the
 trade Anthony approved, and re-approving that is a human decision with fresh
 eyes, not a daemon's at 09:31.
 
-**Why the two freshness clocks.** The book is fetched once per cycle and handed
-straight to the gate, so the read stamp is always about zero minutes old and a
-gate built on it alone could never fire. Schwab's own quote time is what catches
-a halted symbol, a frozen feed or a pre-market read — the case Anthony's "time
-sensitive data" actually names. A gate that cannot fail is not a gate.
+**Why the two freshness clocks, and why one of them does not count alone.** The
+book is fetched once per cycle and handed straight to the gate, so the read stamp
+(`quotes_as_of`) is always about zero minutes old and a gate built on it alone
+could never fire. Schwab's own quote time is what catches a halted symbol, a
+frozen feed or a pre-market read — the case Anthony's "time sensitive data"
+actually names. A gate that cannot fail is not a gate.
+
+So the gate **records which clock answered** and refuses when the per-symbol
+Schwab stamp is missing or unparseable, with `failed: ["quote_time_unmeasured"]`
+and `quote_time_seen: false` in the log. Taking `max(ages)` over "whatever
+parsed" could not tell "both clocks measured, both fresh" from "the stamp was
+absent so the inert read clock answered alone and of course said ~0" — the second
+is a gate reporting freshness it never measured. **WAITS**, because an unmeasured
+clock is a failed read, not a verdict on the idea.
+
+**The gap-down hole, closed 2026-09-04.** The band used to bound drift **UP**
+only — `max_last` and the standing cap — so a gap **DOWN** through the planned
+stop passed every check. With the shipped numbers (plan last 18.50, stop 17.98,
+`max_last` 18.68) an ETHA open at 17.60 is under `max_last`, under the cap, and
+one session barely moves a 20/50 SMA stack, so the bracket **posted** with its
+child stop already through the market. Both of Schwab's answers are bad: accept
+it and the parent fills at ~17.60 with the child triggering at once — a position
+opened and closed in a shape nobody approved; reject the child and the parent
+still fills, leaving the account long and **naked**, the outcome this whole wire
+exists to prevent. A ~2.9% overnight gap is ordinary for a crypto ETF. Now:
+`last <= stop` is terminal, always; `min_last` catches the merely-degraded case
+where the fill would sit a few cents from a stop sized for ten times that.
 
 **A ticket with no `validity` behaves exactly as it did before 2026-09-04.** The
 hand-written example ticket above still works, unchanged, and no history is

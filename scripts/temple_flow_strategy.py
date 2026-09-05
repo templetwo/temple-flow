@@ -150,6 +150,17 @@ def floor_to_tick(px: Any) -> float:
     return round(math.floor(float(px) / TICK + 1e-9) * TICK, 2)
 
 
+def ceil_to_tick(px: Any) -> float:
+    """Whole cent AT OR ABOVE px. The mirror of floor_to_tick, for FLOORS.
+
+    A maximum is floored so rounding cannot loosen it; a minimum is ceiled for
+    exactly the same reason in the other direction. Used for `validity.min_last`
+    — the lower edge of the drift band — where rounding down would admit a
+    price the band excludes.
+    """
+    return round(math.ceil(float(px) / TICK - 1e-9) * TICK, 2)
+
+
 def _num(v: Any) -> float | None:
     if v is None or isinstance(v, bool):
         return None

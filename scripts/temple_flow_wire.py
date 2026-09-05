@@ -20,6 +20,7 @@ import argparse
 import json
 import math
 import os
+import re
 import sys
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
@@ -82,10 +83,33 @@ HISTORY_DAYS = 260
 #: 5 more for its slope. Below this the plan says `insufficient_history`, which
 #: is NOT the same fact as `history_unproven` (a read that failed).
 MIN_HISTORY_BARS = 55
-#: How much older than `validity.max_data_age_minutes` a PLAN may be and still
-#: be approvable. 24 x 60min = a one-day approval window: plan overnight,
-#: Anthony approves in the morning, anything older is regenerated not approved.
-PLAN_STALE_MULTIPLIER = 24
+#: How old a PLAN may be and still be approvable. Plan overnight, Anthony
+#: approves in the morning; anything older is regenerated, not approved.
+#:
+#: ITS OWN PARAMETER, NOT A MULTIPLE OF THE QUOTE BOUND. Until 2026-09-04 this
+#: window was `validity.max_data_age_minutes x 24`, which coupled two unrelated
+#: clocks BACKWARDS: tightening the quote-freshness bound from 60 to 15 minutes
+#: — a safety tightening, and exactly what "time sensitive data" invites —
+#: silently shrank the approval window from 24h to 6h, so a 20:00 plan could no
+#: longer be approved at 07:00. One knob must not quietly move the other.
+MAX_PLAN_AGE_HOURS = 24.0
+#: How many session closes ahead cmd_approve_plan sets a ticket's `expires_at`.
+#: 1 = "this idea is good until the next close". An approved ticket used to be
+#: bounded by price and trend only, never by time.
+APPROVAL_EXPIRES_AT_SESSIONS = 1
+#: A plan ticket id becomes a filename. Generated ids are
+#: TF-PLAN-<YYYYMMDD-HHMM>-<SYM>; anything with a separator, a "..", or a NUL
+#: is refused rather than joined into a path.
+_SAFE_TICKET_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+#: Seconds a daily-history read may block. The planner's own budget.
+HISTORY_TIMEOUT_S = 30.0
+#: The re-evaluation refetch's budget, and it is deliberately much smaller.
+#: That call happens inside gate_outbox_ticket, which run_cycle drives BEFORE
+#: plan_actions — so a hung Schwab read there delays a PROTECT stop, during
+#: RTH, which is when protect matters most. A slow read should defer the
+#: ticket (a WAIT, re-gated in 900s) rather than hold the lane: nothing is lost
+#: by waiting a cycle, and a naked position waiting on a socket is real.
+HISTORY_TIMEOUT_REEVAL_S = 8.0
 
 # --- outbox refusal disposition -------------------------------------------
 # Anthony, 2026-09-03 07:49 ET:
@@ -244,6 +268,39 @@ def in_rth(now: datetime | None = None) -> bool:
         return False
     minutes = t.hour * 60 + t.minute
     return (9 * 60) <= minutes < (16 * 60)
+
+
+def session_close_after(now: datetime | None = None, sessions: int = 1) -> datetime:
+    """The 16:00 ET close `sessions` sessions from now. Weekdays only.
+
+    A session is a WEEKDAY here, exactly as in_rth() defines one — the wire has
+    no exchange holiday calendar. NAME THE ERROR THAT MAKES, do not hide it: a
+    market holiday is counted as a session, so a deadline can fall on a day the
+    exchange never opened and the ticket expires having had fewer live sessions
+    than it was given. That direction is fail-safe (the idea dies, nothing
+    posts, a human re-approves in one command) which is why the approximation
+    is acceptable — but a reader must not expect "1 session" to mean "1 trading
+    session" across Thanksgiving.
+
+    Counting starts from the NEXT close strictly after `now`, so approving at
+    16:30 Friday with sessions=1 yields Monday 16:00, not a deadline in the
+    past.
+    """
+    t = now_et(now)
+    close = t.replace(hour=16, minute=0, second=0, microsecond=0)
+    if t >= close or t.weekday() >= 5:
+        # push to the next calendar day; the weekday skip below lands it
+        close = (t + timedelta(days=1)).replace(
+            hour=16, minute=0, second=0, microsecond=0
+        )
+    remaining = max(1, int(sessions))
+    while True:
+        while close.weekday() >= 5:
+            close = close + timedelta(days=1)
+        remaining -= 1
+        if remaining <= 0:
+            return close
+        close = close + timedelta(days=1)
 
 
 def logj(obj: dict) -> None:
@@ -1448,8 +1505,17 @@ def _broker_auth() -> dict:
         }
 
 
-def fetch_daily_history(symbol: str, days: int = HISTORY_DAYS) -> dict:
+def fetch_daily_history(
+    symbol: str, days: int = HISTORY_DAYS, timeout: float = HISTORY_TIMEOUT_S
+) -> dict:
     """Read-only daily candles for one symbol. Never posts, never mutates.
+
+    `timeout` is a parameter and not a constant because the two callers sit in
+    different lanes with different costs for waiting. The off-hours planner has
+    the whole night; the re-evaluation refetch inside gate_outbox_ticket runs
+    DURING RTH and BEFORE plan_actions in run_cycle, so every second it blocks
+    is a second a protect stop is not being placed. See
+    HISTORY_TIMEOUT_REEVAL_S.
 
     COVERAGE IS STATED, exactly like the book's legs: the return always carries
     `history_ok`, and absence of proof is not permission. A failed call yields
@@ -1497,7 +1563,7 @@ def fetch_daily_history(symbol: str, days: int = HISTORY_DAYS) -> dict:
                 "frequency": 1,
                 "needExtendedHoursData": "false",
             },
-            timeout=30,
+            timeout=timeout,
         )
         if r.status_code != 200:
             out["note"] = "pricehistory_http=" + str(r.status_code)
@@ -1623,31 +1689,55 @@ def window_return(values: list, n: int) -> float | None:
     return (values[-1] - base) / base
 
 
-def quote_age_minutes(
+def quote_freshness(
     book: dict, symbol: str, now: datetime | None = None
-) -> float | None:
-    """Minutes since this symbol's price was TRUE. None when unknowable.
+) -> dict:
+    """How old this symbol's price is AND WHICH CLOCK SAID SO.
 
-    THE OLDER OF TWO CLOCKS, and both are needed:
-      * `book["quotes_as_of"]` — when the daemon read the quotes leg. On a
-        daemon cycle this is always ~0, so alone it makes an inert gate.
-      * `quotes[sym]["quote_time"]` — Schwab's own quote/trade stamp (epoch ms
-        or seconds). This is the one that fires on a halted symbol or a frozen
-        feed, which is the case Anthony's "time sensitive data" names.
+    Returns {"age_minutes", "read_stamp_age", "quote_time_age",
+             "read_stamp_seen", "quote_time_seen"} — every key on every call.
 
-    None means NEITHER stamp was readable, and the caller must treat that as
-    stale rather than fresh: a book that does not state when it was true has
-    not proven freshness, and absence of proof is not permission.
+    THE OLDER OF TWO CLOCKS, and they are not interchangeable:
+      * `book["quotes_as_of"]` — when the daemon READ the quotes leg. fetch_book
+        stamps it now_et() at :1314, so on a daemon cycle it is always ~0
+        minutes. It is a real fact and it is nearly useless as a freshness
+        signal: it says the read happened, never that the price is current.
+      * `quotes[sym]["quote_time"]` — Schwab's own quote/trade stamp. THIS is
+        the clock that fires on a halted symbol, a frozen feed or a pre-market
+        read, which is the case Anthony's "time sensitive data" names.
 
-    A stamp in the future (broker clock skew) is clamped to 0, not folded into
-    an absolute value — skew is not staleness.
+    WHY THE BOOLEANS EXIST, and they are the point of this function rather than
+    a convenience: `max(ages)` over "whatever parsed" cannot distinguish
+    "measured both clocks, both fresh" from "the per-symbol stamp was absent so
+    the inert read clock answered alone and of course said ~0". The second is a
+    gate reporting freshness it never measured — fail-open, the failure class
+    this wire hunts. Callers that must not decide blind read `quote_time_seen`
+    and refuse when it is False.
+
+    `*_seen` IS SET FROM A PARSED AGE, NEVER FROM KEY PRESENCE. A stamp that is
+    there but unparseable — a string that is not ISO, a non-numeric, an epoch
+    out of range — leaves the flag False, because an unreadable clock measured
+    nothing. Setting it from `"quote_time" in q` would rebuild the same
+    fail-open one layer in.
+
+    A stamp in the future (broker clock skew) is clamped to 0 rather than
+    folded through abs() — skew is not staleness.
     """
     t_now = now_et(now)
-    ages: list = []
+    out: dict = {
+        "age_minutes": None,
+        "read_stamp_age": None,
+        "quote_time_age": None,
+        "read_stamp_seen": False,
+        "quote_time_seen": False,
+    }
     stamp = book.get("quotes_as_of") if isinstance(book, dict) else None
     if stamp:
         try:
-            ages.append((t_now - _parse_ticket_time(stamp)).total_seconds() / 60.0)
+            out["read_stamp_age"] = (
+                t_now - _parse_ticket_time(stamp)
+            ).total_seconds() / 60.0
+            out["read_stamp_seen"] = True
         except (ValueError, TypeError):
             pass
     q = (book.get("quotes") or {}).get(symbol) if isinstance(book, dict) else None
@@ -1655,7 +1745,10 @@ def quote_age_minutes(
         raw = q.get("quote_time")
         if isinstance(raw, str) and raw.strip():
             try:
-                ages.append((t_now - _parse_ticket_time(raw)).total_seconds() / 60.0)
+                out["quote_time_age"] = (
+                    t_now - _parse_ticket_time(raw)
+                ).total_seconds() / 60.0
+                out["quote_time_seen"] = True
             except (ValueError, TypeError):
                 pass
         else:
@@ -1665,12 +1758,40 @@ def quote_age_minutes(
                 seconds = epoch / 1000.0 if epoch > 1e11 else epoch
                 try:
                     when = datetime.fromtimestamp(seconds, tz=timezone.utc)
-                    ages.append((t_now - when.astimezone(ET)).total_seconds() / 60.0)
+                    out["quote_time_age"] = (
+                        t_now - when.astimezone(ET)
+                    ).total_seconds() / 60.0
+                    out["quote_time_seen"] = True
                 except (OverflowError, OSError, ValueError):
                     pass
-    if not ages:
-        return None
-    return max(0.0, max(ages))
+    ages = [
+        a
+        for a in (out["read_stamp_age"], out["quote_time_age"])
+        if a is not None
+    ]
+    if ages:
+        out["age_minutes"] = max(0.0, max(ages))
+    return out
+
+
+def quote_age_minutes(
+    book: dict, symbol: str, now: datetime | None = None
+) -> float | None:
+    """Minutes since this symbol's price was TRUE. None when unknowable.
+
+    The OLDER of the two clocks quote_freshness() reads. None means NEITHER
+    stamp was readable, and a caller must treat that as stale rather than
+    fresh: a book that does not state when it was true has not proven
+    freshness, and absence of proof is not permission.
+
+    THIS NUMBER ALONE IS NOT A FRESHNESS VERDICT on a live wire. It cannot say
+    which clock produced it, and the read clock is ~0 on every daemon cycle, so
+    a gate built on this return value alone reports FRESH whenever the
+    per-symbol stamp is missing. Use quote_freshness() and check
+    `quote_time_seen` wherever a refusal depends on the answer; this wrapper is
+    for logging and for callers that already know they are looking at both.
+    """
+    return quote_freshness(book, symbol, now)["age_minutes"]
 
 
 def compute_features(symbol: str, book: dict, history: dict, rules: dict) -> dict:
@@ -2014,11 +2135,46 @@ def build_plan(
             continue
         entry: dict = {"decision": "none", "reason": "", "ticket": None}
 
+        # 0. the risk box. Its max_opens clause is NOT day-scoped (see the
+        #    WAIT_REFUSALS docstring): count_opens counts distinct symbols
+        #    holding a position or a working entry, so a saturated box is a
+        #    structural state that tomorrow does not clear. Proposing into it
+        #    puts a candidate in front of a human that cannot execute today or
+        #    tomorrow. The box is already computed above; this spends nothing.
+        if not box["ok"]:
+            entry["reason"] = "risk_box_blocked"
+            entry["risk_box"] = box["reasons"]
+            entry["features"] = compute_features(sym, book, {}, rules)
+            plan["symbols"][sym] = entry
+            continue
+
         # 1. quotes. No live price, no idea — and a blind quotes leg is the
         #    fail-open direction (every price test below only fires when `last`
         #    is known), so it is answered before anything is fetched.
         if not book_leg_proven(book, "quotes") or last_price(book, sym) is None:
             entry["reason"] = "quotes_unproven"
+            entry["features"] = compute_features(sym, book, {}, rules)
+            plan["symbols"][sym] = entry
+            continue
+
+        # 1b. orders. THE SAME FAIL-OPEN SHAPE AS THE QUOTES LEG, one lane over,
+        #    and it was live until 2026-09-04. compute_features sets
+        #    has_working_entry from `existing_entry(...) if
+        #    book_leg_proven(book, "orders") else None`, so an UNPROVEN orders
+        #    leg yields False, and strategy.check_conditions then computes
+        #    no_open_exposure = pos <= 0 and not has_working_entry = TRUE. The
+        #    plan file would assert "nothing is open on this symbol" on a cycle
+        #    where the daemon COULD NOT LOOK — the exact inversion the strategy
+        #    contract forbids at temple_flow_strategy.py:168-170 ("a missing
+        #    feature makes its condition FALSE, never True").
+        #
+        #    No wrong order could reach Schwab through it (gate_outbox_ticket
+        #    refuses `orders_unproven` before anything posts), so the cost was
+        #    a false statement in front of the human whose approval is the
+        #    money door. That is reason enough: the plan file is the document
+        #    the approval is given ON.
+        if not book_leg_proven(book, "orders"):
+            entry["reason"] = "orders_unproven"
             entry["features"] = compute_features(sym, book, {}, rules)
             plan["symbols"][sym] = entry
             continue
@@ -2077,6 +2233,14 @@ def build_plan(
         max_last = strategy.floor_to_tick(last * (1.0 + drift))
         if cap is not None:
             max_last = min(max_last, cap)
+        # THE SYMMETRIC FLOOR, from the SAME max_drift_pct — one band, one
+        # number in the rules file. A gap DOWN is not a bargain on a bracket:
+        # the stop was placed 2*ATR under the PLANNED last, so filling well
+        # below it leaves a stop a few cents away that ordinary noise takes
+        # out. The hard `last <= stop` refusal in the gate catches the lethal
+        # case; this catches the merely-degraded one and hands it back to the
+        # human, who can re-plan on the new price in one command.
+        min_last = strategy.ceil_to_tick(last * (1.0 - drift))
         ticket_id = "TF-PLAN-" + stamp + "-" + sym
         entry["decision"] = "candidate"
         entry["reason"] = "strategy_candidate"
@@ -2097,6 +2261,7 @@ def build_plan(
             "source_plan": plan_file_path(repo_root, t_now).name,
             "validity": {
                 "max_last": max_last,
+                "min_last": min_last,
                 "min_sma20_over_sma50": True,
                 "max_data_age_minutes": float(p["max_data_age_minutes"]),
                 "planned_last": last,
@@ -2912,11 +3077,13 @@ def gate_outbox_ticket(
     if isinstance(validity, dict) and validity:
         planned_last = _f(validity.get("planned_last"))
         max_last = _f(validity.get("max_last"))
+        min_last = _f(validity.get("min_last"))
         max_age = _f(validity.get("max_data_age_minutes"))
         check = {
             "planned_last": planned_last,
             "planned_atr": _f(validity.get("planned_atr")),
             "max_last": max_last,
+            "min_last": min_last,
             "max_data_age_minutes": max_age,
             "min_sma20_over_sma50": bool(validity.get("min_sma20_over_sma50")),
         }
@@ -2936,27 +3103,81 @@ def gate_outbox_ticket(
         # Freshness. `max_data_age_minutes` absent or unparseable is NOT a free
         # pass: a validity block that cannot say how fresh its data must be
         # cannot be re-evaluated, so it waits for a cycle whose ticket says.
-        age = quote_age_minutes(book, sym, now)
+        #
+        # WHICH CLOCK ANSWERED IS RECORDED, AND ONE OF THEM DOES NOT COUNT ON
+        # ITS OWN. `quotes_as_of` is stamped now_et() at fetch time (:1314), so
+        # it reads ~0 minutes on every daemon cycle: if the per-symbol Schwab
+        # stamp is missing for ANY reason — field absent from the payload, a
+        # key Schwab renamed, a symbol returned without quoteTime/tradeTime —
+        # then max(ages) is the inert read clock and the gate would report
+        # FRESH having measured nothing. That is the fail-open shape this wire
+        # exists to close, so an unmeasured quote clock is UNPROVEN, and
+        # unproven WAITS for a cycle that can measure it.
+        fresh = quote_freshness(book, sym, now)
+        age = fresh["age_minutes"]
         check["quote_age_minutes"] = None if age is None else round(age, 3)
+        check["quote_time_seen"] = fresh["quote_time_seen"]
+        check["read_stamp_seen"] = fresh["read_stamp_seen"]
+        check["quote_time_age_minutes"] = (
+            None
+            if fresh["quote_time_age"] is None
+            else round(fresh["quote_time_age"], 3)
+        )
         if max_age is None or max_age <= 0:
             check["failed"] = ["max_data_age_minutes_missing"]
+            return "data_stale_refetch_next_cycle", detail
+        if not fresh["quote_time_seen"]:
+            # Ordered BEFORE the age comparison because it is the more honest
+            # fact: "I never measured the clock that can fire" is not the same
+            # statement as "what I measured is old", and the log line should
+            # say which one happened.
+            check["failed"] = ["quote_time_unmeasured"]
             return "data_stale_refetch_next_cycle", detail
         if age is None or age > max_age:
             check["failed"] = ["quote_age"]
             return "data_stale_refetch_next_cycle", detail
 
-        # The idea's own bound, then the standing cap. Both terminal: the
+        # THE DOWNSIDE HALF OF THE BAND, and it is the half that can cost money
+        # rather than an opportunity. Until 2026-09-04 this block bounded drift
+        # UP only, so a gap DOWN through the planned stop passed every check:
+        # plan last 18.50 / stop 17.98 (= last - 2*ATR) with the market opened
+        # at 17.60 is under max_last, under the cap, and one session barely
+        # moves a 20/50 SMA stack. The bracket would then POST with its child
+        # stop already through the market, and both of Schwab's answers are
+        # bad — accept it and the parent fills at ~17.60 with the stop
+        # triggering at once (a position opened and closed in a shape no human
+        # approved), reject the child and the parent still fills, leaving the
+        # account long and NAKED, which is the exact outcome this wire exists
+        # to prevent. A ~2.9% overnight gap is ordinary for a crypto ETF.
+        #
+        # Terminal, not a wait: a price at or below the protective stop means
+        # the setup the human approved is gone, not merely early.
+        if last_now <= stop:
+            check["failed"] = ["last_at_or_below_stop"]
+            check["stop"] = stop
+            return "idea_stale_reevaluated", detail
+
+        # The idea's own bounds, then the standing cap. All terminal: the
         # market moved past the trade a human approved, and re-approving is
         # the human's call with fresh eyes, not the daemon's at 09:31.
         if max_last is not None and last_now > max_last:
             check["failed"] = ["last_above_max_last"]
+            return "idea_stale_reevaluated", detail
+        # `min_last` is the symmetric floor: the planner derives it from the
+        # SAME max_drift_pct that produces max_last, so the band is one number
+        # in the rules file and not two. It is optional — a hand-written ticket
+        # without it keeps the plain stop check above and nothing else.
+        if min_last is not None and last_now < min_last:
+            check["failed"] = ["last_below_min_last"]
             return "idea_stale_reevaluated", detail
         if entry_cap is not None and last_now > entry_cap:
             check["failed"] = ["last_above_cap"]
             return "idea_stale_reevaluated", detail
 
         if check["min_sma20_over_sma50"]:
-            hist = fetch_daily_history(sym, HISTORY_DAYS)
+            hist = fetch_daily_history(
+                sym, HISTORY_DAYS, timeout=HISTORY_TIMEOUT_REEVAL_S
+            )
             check["history_ok"] = bool((hist or {}).get("history_ok"))
             check["history_as_of"] = (hist or {}).get("as_of")
             check["history_bars"] = (hist or {}).get("bars")
@@ -3306,12 +3527,24 @@ def cmd_approve_plan(
       * plan unreadable, or the id is not a CANDIDATE in that plan;
       * the ticket's `validity` does not state `max_data_age_minutes` — a
         window is not invented on a money path, the plan is regenerated;
-      * the plan is older than max_data_age_minutes x PLAN_STALE_MULTIPLIER.
-        A stale plan must be REGENERATED, not approved: its prices, its trend
-        and its ATR were true of a market that has moved on;
+      * the plan is older than MAX_PLAN_AGE_HOURS. A stale plan must be
+        REGENERATED, not approved: its prices, its trend and its ATR were true
+        of a market that has moved on;
       * the plan is stamped in the future (clock skew, or a hand-edited file);
+      * the ticket id is not [A-Za-z0-9._-]+. Generated ids are
+        TF-PLAN-<YYYYMMDD-HHMM>-<SYM>, so nothing legitimate is excluded; the
+        check exists because the id is interpolated into a path below and a
+        hand-edited plan carrying a separator would write outside the outbox;
       * config/outbox/<id>.json already exists. Never clobber a ticket that may
         already be waiting, stamped, or half-way through its own life.
+
+    IT STAMPS A DEADLINE. `expires_at` = 16:00 ET of the next session on or
+    after approval (APPROVAL_EXPIRES_AT_SESSIONS ahead), which
+    ticket_wait_bounds_refusal already enforces terminally as `ticket_expired`.
+    Without it an approved ticket was bounded by PRICE and TREND only, so an
+    idea approved Monday could post Thursday if the market happened back into
+    the band. A human-approved idea now has a shelf life stated in its own
+    file, and a human who wants longer edits one field.
 
     `risk_stamped: true` here is a LOADER PRECONDITION, not a risk waiver.
     Every gate in gate_outbox_ticket still runs on a fresh book, and the
@@ -3370,13 +3603,21 @@ def cmd_approve_plan(
     except (ValueError, TypeError):
         return _fail("plan_planned_at_not_iso", planned_at=plan.get("planned_at"))
     age_minutes = (t_now - planned_at).total_seconds() / 60.0
-    limit_minutes = max_age * PLAN_STALE_MULTIPLIER
+    limit_minutes = MAX_PLAN_AGE_HOURS * 60.0
     out["plan_age_minutes"] = round(age_minutes, 2)
     out["max_plan_age_minutes"] = limit_minutes
     if age_minutes < -1.0:
         return _fail("plan_timestamp_in_the_future", planned_at=planned_at.isoformat())
     if age_minutes > limit_minutes:
         return _fail("plan_too_old_regenerate", planned_at=planned_at.isoformat())
+
+    # The id lands in a path on the next line. Validated here rather than
+    # trusted: plan ids are generated from LIVE_UNIVERSE so a daemon-written
+    # plan can never carry a separator, but this function's whole input is a
+    # FILE plus an ARGV string, and a hand-edited plan is an ordinary thing for
+    # a human to make.
+    if not _SAFE_TICKET_ID.match(str(ticket_id)):
+        return _fail("ticket_id_not_path_safe")
 
     dest = root / "config" / "outbox" / (str(ticket_id) + ".json")
     if dest.exists():
@@ -3387,6 +3628,13 @@ def cmd_approve_plan(
     approved["risk_stamped"] = True
     approved["human_approved_at"] = t_now.isoformat()
     approved["approved_from_plan"] = str(path)
+    # A shelf life, in the file, in the human's own units. Not stamped when the
+    # plan already carries one — a hand-set deadline is the human's call.
+    if approved.get("expires_at") is None:
+        approved["expires_at"] = session_close_after(
+            t_now, APPROVAL_EXPIRES_AT_SESSIONS
+        ).isoformat()
+    out["expires_at"] = approved["expires_at"]
     try:
         dest.parent.mkdir(parents=True, exist_ok=True)
         tmp = dest.with_suffix(dest.suffix + ".tmp")

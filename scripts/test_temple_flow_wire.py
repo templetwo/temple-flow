@@ -24,6 +24,25 @@ from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
+
+# THE OFFLINE PIN, AND IT IS EXECUTABLE RATHER THAN PROSE ON PURPOSE.
+# temple_flow_wire computes BROKER_ROOT from this variable AT IMPORT
+# (temple_flow_wire.py:46-48), and broker_available() is the only thing standing
+# between an unpatched read helper and a real Schwab OAuth refresh + GET. Until
+# 2026-09-04 the pin lived ONLY in comments and in the command an operator was
+# trusted to type; run plainly on the Studio — where ~/spiral-broker exists —
+# fetch_daily_history would have reached the live account, in flat violation of
+# rule 2 at the top of this file.
+#
+# FORCE-SET, not setdefault: the launchd plist exports
+# SPIRAL_BROKER_ROOT=/Users/tony_studio/spiral-broker, so any shell that
+# inherited the daemon's environment would defeat a setdefault. No test in this
+# file needs a real broker root, so there is nothing to preserve.
+# test_no_broker_on_the_machine_means_history_unproven is the positive control:
+# it asserts broker_available() is False, so if this line is ever removed the
+# suite says so instead of quietly going online.
+os.environ["SPIRAL_BROKER_ROOT"] = "/nonexistent"
+
 sys.path.insert(0, str(HERE))
 
 import temple_flow_strategy  # noqa: E402
@@ -54,6 +73,12 @@ def example_rules() -> dict:
     Studio is Anthony's live edited file. Tests must not depend on it.
     """
     return deepcopy(json.loads(EXAMPLE_RULES_PATH.read_text()))
+
+
+#: "the caller said nothing", distinct from "the caller said None". Needed
+#: because None is a MEANINGFUL value for a quote stamp — it is the absent-stamp
+#: case the freshness gate now refuses on.
+_UNSET = object()
 
 
 def base_book(**kw) -> dict:
@@ -2516,12 +2541,22 @@ def synth_history(
 
 
 def history_source(**by_symbol):
-    """A fetch_daily_history stand-in. Records every symbol it was asked for."""
+    """A fetch_daily_history stand-in. Records every symbol it was asked for.
+
+    Records the TIMEOUT too. The re-evaluation refetch runs ahead of the
+    protect lane inside RTH, so which budget it passes is a safety property,
+    not a detail — and a fixture with a narrow signature would have made the
+    suite go red for the wrong reason when the parameter landed. `**kw` on a
+    stand-in for a real signature is the fail-open direction elsewhere; here
+    the assertion is on `timeouts`, so nothing is swallowed unexamined.
+    """
     seen: list = []
+    timeouts: list = []
     default = by_symbol.pop("default", None)
 
-    def fake(symbol, days=None):
+    def fake(symbol, days=None, timeout=None):
         seen.append(str(symbol).upper())
+        timeouts.append(timeout)
         h = by_symbol.get(str(symbol).upper())
         if h is None:
             h = default if default is not None else synth_history(symbol)
@@ -2530,10 +2565,11 @@ def history_source(**by_symbol):
         return out
 
     fake.seen = seen
+    fake.timeouts = timeouts
     return fake
 
 
-def never_called_history(symbol, days=None):
+def never_called_history(symbol, days=None, timeout=None):
     raise AssertionError("daily history was fetched when it must not have been")
 
 
@@ -2872,7 +2908,9 @@ class TestApprovePlanCli(unittest.TestCase):
     def test_approve_refuses_a_stale_plan(self):
         """A stale plan is REGENERATED, not approved.
 
-        max_data_age_minutes 60 x PLAN_STALE_MULTIPLIER 24 = a 24h window.
+        The window is MAX_PLAN_AGE_HOURS (24h), a parameter of its own. It
+        used to be derived as max_data_age_minutes x 24, which meant tightening
+        the QUOTE freshness bound silently shrank the plan-approval window.
         FAILS ON 8bd850d: cmd_approve_plan does not exist.
         """
         with tempfile.TemporaryDirectory() as tmpdir, no_network():
@@ -3001,9 +3039,34 @@ class TestReevaluationWithFreshData(unittest.TestCase):
         v.update(kw)
         return v
 
-    def live_book(self, last=18.50, read_minutes_ago=2, quote_time=None, **kw) -> dict:
-        """A proven read at 10:00, with both freshness stamps under control."""
+    def live_book(
+        self,
+        last=18.50,
+        read_minutes_ago=2,
+        quote_minutes_ago=1,
+        quote_time=_UNSET,
+        **kw,
+    ) -> dict:
+        """A proven read at 10:00, with both freshness stamps under control.
+
+        THE DEFAULT CARRIES A REAL SCHWAB STAMP, and that is the fix to a hole
+        this fixture used to open. Its old default was quote_time=None, so the
+        one green permit path in this class — test_validity_holds_and_the_
+        ticket_posts — ran in the ONE configuration where the freshness gate
+        could not fire: no per-symbol stamp, only the ~0-minute read clock
+        answering. The Schwab stamp was exercised in the refusal direction
+        only. A suite whose pass case is the gate's blind spot certifies
+        nothing about the gate.
+
+        `quote_minutes_ago` moves Schwab's clock; `quote_time=<epoch ms or ISO>`
+        overrides it outright; `quote_time=None` writes an explicitly ABSENT
+        stamp, which is now a refusal in its own right.
+        """
         stamp = (self.at(10) - timedelta(minutes=read_minutes_ago)).isoformat()
+        if quote_time is _UNSET:
+            quote_time = int(
+                (self.at(10) - timedelta(minutes=quote_minutes_ago)).timestamp() * 1000
+            )
         book = base_book(
             in_rth=True,
             armed=True,
@@ -3100,7 +3163,7 @@ class TestReevaluationWithFreshData(unittest.TestCase):
         FAILS ON 8bd850d: patched("fetch_daily_history") is AttributeError, and
         the gate has no data-freshness check to fail.
         """
-        stale_ms = int((self.at(7) - timedelta(hours=0)).timestamp() * 1000)
+        stale_ms = int(self.at(7).timestamp() * 1000)
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             p = self._write(root, ticket(qty=11, validity=self.validity()))
@@ -3139,6 +3202,91 @@ class TestReevaluationWithFreshData(unittest.TestCase):
             self.assertEqual(calls, [])
             self.assertTrue(p.exists())
 
+    def test_a_missing_schwab_stamp_defers_even_when_the_read_is_seconds_old(self):
+        """THE FAIL-OPEN THIS CLASS USED TO CERTIFY AS A PASS.
+
+        The read clock is 2 minutes old and perfectly valid. Schwab's own
+        per-symbol stamp is ABSENT — the field missing from the payload, a key
+        renamed, a symbol returned without quoteTime or tradeTime. Before
+        2026-09-04 quote_age_minutes returned max([~2]) = ~2, the gate compared
+        2 < 60, called it FRESH, and the overnight ticket posted on data whose
+        age had never been measured. The inert clock was the only thing that
+        answered and nothing in the log said so.
+
+        The permit test above now runs WITH a Schwab stamp, so this is the
+        configuration that used to be the only green path. It must refuse.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            p = self._write(root, ticket(qty=11, validity=self.validity()))
+            out, calls = self._cycle(
+                root,
+                self.live_book(read_minutes_ago=2, quote_time=None),
+                never_called_history,
+                self.at(10),
+            )
+            line = self._ticket_lines(out)[0]
+            self.assertEqual(line["execute"], "deferred")
+            self.assertEqual(line["reason"], "data_stale_refetch_next_cycle")
+            check = line["gate"]["reevaluation"]
+            self.assertEqual(check["failed"], ["quote_time_unmeasured"])
+            # the log says WHICH clock answered, which is the whole fix
+            self.assertIs(check["quote_time_seen"], False)
+            self.assertIs(check["read_stamp_seen"], True)
+            self.assertLess(check["quote_age_minutes"], 60)
+            self.assertEqual(calls, [], "nothing may post on unmeasured data")
+            self.assertTrue(p.exists(), "unproven freshness WAITS, never dies")
+
+    def test_an_unparseable_schwab_stamp_counts_as_unmeasured_not_as_fresh(self):
+        """`quote_time_seen` is set from a PARSED age, never from key presence.
+
+        A stamp that is present and garbage measured nothing. Reading the flag
+        off `"quote_time" in q` would rebuild the same fail-open one layer in,
+        so this fixture ships junk in the field and demands the same refusal as
+        an absent one.
+        """
+        for junk in ("not-a-timestamp", 0, -5, "", 10**18):
+            with self.subTest(quote_time=junk):
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    root = Path(tmpdir)
+                    self._write(root, ticket(qty=11, validity=self.validity()))
+                    out, calls = self._cycle(
+                        root,
+                        self.live_book(quote_time=junk),
+                        never_called_history,
+                        self.at(10),
+                    )
+                    line = self._ticket_lines(out)[0]
+                    self.assertEqual(line["reason"], "data_stale_refetch_next_cycle")
+                    self.assertEqual(
+                        line["gate"]["reevaluation"]["failed"],
+                        ["quote_time_unmeasured"],
+                    )
+                    self.assertEqual(calls, [])
+
+    def test_quote_freshness_reports_both_clocks_separately(self):
+        """The unit under the gate, in isolation: which stamp answered."""
+        book = self.live_book(read_minutes_ago=2, quote_minutes_ago=40)
+        f = temple_flow_wire.quote_freshness(book, "ETHA", self.at(10))
+        self.assertIs(f["read_stamp_seen"], True)
+        self.assertIs(f["quote_time_seen"], True)
+        self.assertAlmostEqual(f["read_stamp_age"], 2.0, places=1)
+        self.assertAlmostEqual(f["quote_time_age"], 40.0, places=1)
+        # the OLDER clock wins
+        self.assertAlmostEqual(f["age_minutes"], 40.0, places=1)
+        # a future stamp is skew, clamped to 0, not folded through abs()
+        ahead = self.live_book(read_minutes_ago=-30, quote_minutes_ago=-30)
+        self.assertEqual(
+            temple_flow_wire.quote_freshness(ahead, "ETHA", self.at(10))["age_minutes"],
+            0.0,
+        )
+        # nothing readable at all is None, on both legs
+        blind = {"quotes": {"ETHA": {"last": 18.5}}}
+        f_blind = temple_flow_wire.quote_freshness(blind, "ETHA", self.at(10))
+        self.assertIsNone(f_blind["age_minutes"])
+        self.assertIs(f_blind["quote_time_seen"], False)
+        self.assertIs(f_blind["read_stamp_seen"], False)
+
     def test_a_book_that_never_says_when_defers(self):
         """Absence of a freshness stamp is not permission.
 
@@ -3153,7 +3301,14 @@ class TestReevaluationWithFreshData(unittest.TestCase):
             out, calls = self._cycle(root, book, never_called_history, self.at(10))
             line = self._ticket_lines(out)[0]
             self.assertEqual(line["reason"], "data_stale_refetch_next_cycle")
-            self.assertIsNone(line["gate"]["reevaluation"]["quote_age_minutes"])
+            check = line["gate"]["reevaluation"]
+            self.assertIsNone(check["quote_age_minutes"])
+            # BOTH clocks silent, and the label says the Schwab one is the
+            # missing measurement — the read clock being absent too is not
+            # what makes this a refusal.
+            self.assertEqual(check["failed"], ["quote_time_unmeasured"])
+            self.assertIs(check["quote_time_seen"], False)
+            self.assertIs(check["read_stamp_seen"], False)
             self.assertEqual(calls, [])
             self.assertTrue(p.exists())
 
@@ -3181,6 +3336,144 @@ class TestReevaluationWithFreshData(unittest.TestCase):
             self.assertEqual(calls, [])
             self.assertFalse(p.exists())
             self.assertTrue((root / "config" / "outbox" / "failed" / p.name).exists())
+
+    def test_a_gap_down_through_the_planned_stop_never_posts(self):
+        """THE ONE-SIDED BAND, AND THE WORST OUTCOME THIS WIRE CAN PRODUCE.
+
+        Shipped example numbers: plan last 18.50, stop 17.98 (= last - 2*ATR
+        0.26), max_last 18.68. ETHA opens at 17.60 — a ~2.9% overnight gap,
+        which is ORDINARY for a crypto ETF, not a tail. Before 2026-09-04 that
+        price passed every check in this block: under max_last, under the
+        18.90 cap, and one session barely disturbs a 20/50 SMA stack. The
+        bracket POSTed with its child stop already through the market, and
+        BOTH of Schwab's possible answers are bad:
+
+          accepted -> the parent LIMIT BUY 18.50 is marketable at 17.60, fills
+            at once, and the child STOP SELL 17.98 triggers immediately: a
+            position opened and closed in a shape no human approved;
+          rejected -> the parent still fills and the account is long 11 ETHA
+            with NO protective stop, which is the outcome the whole wire
+            exists to prevent.
+
+        The trend fixture here is a healthy uptrend on purpose: this must
+        refuse on price alone, not be rescued by the SMA check downstream.
+        """
+        up = history_source(default=synth_history(end=18.30, step=0.038))
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            p = self._write(root, ticket(qty=11, stop=17.98, validity=self.validity()))
+            out, calls = self._cycle(root, self.live_book(last=17.60), up, self.at(10))
+            line = self._ticket_lines(out)[0]
+            self.assertEqual(line["execute"], "refused")
+            self.assertEqual(line["reason"], "idea_stale_reevaluated")
+            check = line["gate"]["reevaluation"]
+            self.assertEqual(check["failed"], ["last_at_or_below_stop"])
+            self.assertEqual(check["last_now"], 17.60)
+            self.assertEqual(check["stop"], 17.98)
+            self.assertEqual(calls, [], "no bracket may be posted through its own stop")
+            self.assertFalse(p.exists())
+            self.assertTrue((root / "config" / "outbox" / "failed" / p.name).exists())
+            # and it refused on PRICE, before spending a history refetch
+            self.assertEqual(up.seen, [])
+
+    def test_last_exactly_at_the_stop_refuses_too(self):
+        """The boundary is <=, not <. A fill at the stop is a stop-out."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            self._write(root, ticket(qty=11, stop=17.98, validity=self.validity()))
+            out, calls = self._cycle(
+                root, self.live_book(last=17.98), never_called_history, self.at(10)
+            )
+            line = self._ticket_lines(out)[0]
+            self.assertEqual(line["reason"], "idea_stale_reevaluated")
+            self.assertEqual(
+                line["gate"]["reevaluation"]["failed"], ["last_at_or_below_stop"]
+            )
+            self.assertEqual(calls, [])
+
+    def test_min_last_is_the_symmetric_floor_of_the_drift_band(self):
+        """A gap down that clears the stop but guts the plan's risk shape.
+
+        18.20 is above the 17.98 stop, so the hard refusal above does not fire
+        — but the bracket would fill ~0.22 from its stop where it was sized for
+        0.52, i.e. a stop ordinary noise takes out. `min_last` is the mirror of
+        `max_last`, derived from the SAME max_drift_pct, so the band is one
+        number in the rules file rather than two.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            p = self._write(
+                root,
+                ticket(
+                    qty=11,
+                    stop=17.98,
+                    validity=self.validity(min_last=18.32),
+                ),
+            )
+            out, calls = self._cycle(
+                root, self.live_book(last=18.20), never_called_history, self.at(10)
+            )
+            line = self._ticket_lines(out)[0]
+            self.assertEqual(line["execute"], "refused")
+            self.assertEqual(line["reason"], "idea_stale_reevaluated")
+            check = line["gate"]["reevaluation"]
+            self.assertEqual(check["failed"], ["last_below_min_last"])
+            self.assertEqual(check["min_last"], 18.32)
+            self.assertEqual(calls, [])
+            self.assertTrue((root / "config" / "outbox" / "failed" / p.name).exists())
+
+    def test_a_ticket_with_no_min_last_keeps_only_the_stop_floor(self):
+        """`min_last` is OPTIONAL. A hand-written ticket without one still
+        posts at a price the band would have excluded — the compatibility
+        contract in AWAY_MODE.md — while the stop floor still holds."""
+        up = history_source(default=synth_history(end=18.30, step=0.038))
+        v = self.validity()
+        v.pop("min_last", None)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            self._write(root, ticket(qty=11, stop=17.98, validity=v))
+            out, calls = self._cycle(root, self.live_book(last=18.20), up, self.at(10))
+            line = self._ticket_lines(out)[0]
+            self.assertEqual(line["execute"], "posted")
+            self.assertIsNone(line["gate"]["reevaluation"]["min_last"])
+            self.assertEqual(len(calls), 1)
+
+    def test_the_planner_stamps_min_last_symmetrically_with_max_last(self):
+        """THE VALVE IS CONNECTED. A `min_last` the gate honours and the
+        planner never writes would be a config that assumes a merge — the
+        exact shape this repo keeps finding. Both halves ship together.
+        """
+        up = history_source(default=synth_history(end=18.30, step=0.038))
+        with tempfile.TemporaryDirectory() as tmpdir, no_network(), patched(
+            "fetch_daily_history", up
+        ):
+            root = Path(tmpdir)
+            night = base_book(
+                in_rth=False, armed=False, quotes_as_of="2026-09-03T20:00:00-04:00"
+            )
+            run_cycle(
+                example_rules(),
+                night,
+                live=False,
+                broker_note="test",
+                repo_root=root,
+                now=self.at(20, day=2),
+            )
+            plan = json.loads(plans_in(root)[0].read_text())
+            v = plan["symbols"]["ETHA"]["ticket"]["validity"]
+            drift = float(plan["strategy_params"]["max_drift_pct"])
+            last = float(plan["symbols"]["ETHA"]["features"]["last"])
+            self.assertEqual(
+                v["max_last"],
+                min(temple_flow_strategy.floor_to_tick(last * (1 + drift)), 18.90),
+            )
+            self.assertEqual(
+                v["min_last"], temple_flow_strategy.ceil_to_tick(last * (1 - drift))
+            )
+            # floored max, CEILED min: rounding never widens the band
+            self.assertLess(v["min_last"], last)
+            self.assertGreater(v["max_last"], last)
+            self.assertGreater(v["min_last"], plan["symbols"]["ETHA"]["ticket"]["stop"])
 
     def test_a_trend_that_flipped_overnight_is_terminal(self):
         """FAILS ON 8bd850d: the gate never refetches history, so a flipped
@@ -3458,6 +3751,326 @@ class TestFeatureMathOnNonLinearData(unittest.TestCase):
         self.assertTrue(checks["slow_sma_rising"])
         self.assertFalse(checks["last_at_or_under_cap"])
         self.assertIsNone(temple_flow_strategy.evaluate("ETHA", f, example_rules()))
+
+
+class TestTheSuiteCannotReachTheBroker(unittest.TestCase):
+    """THE OFFLINE PIN, ASSERTED RATHER THAN TRUSTED TO AN OPERATOR.
+
+    Rule 2 at the top of this file says no code path may reach `requests`. Until
+    2026-09-04 that rule was enforced by (a) `no_network()`, which patches the
+    two ORDER helpers only, and (b) a `SPIRAL_BROKER_ROOT=/nonexistent` pin that
+    existed in three PROSE comments and in nothing executable — no Makefile, no
+    CI, no conftest. On the Studio, where ~/spiral-broker exists, running this
+    file plainly would have let the unpatched read path in
+    test_no_broker_on_the_machine_means_history_unproven do a real OAuth
+    refresh and a real /marketdata/v1/pricehistory GET against the live
+    account.
+
+    The module now force-sets the variable before importing the wire. This
+    class is the alarm on that line: delete it and these tests say so.
+    """
+
+    def test_broker_root_is_pinned_away_from_any_real_broker(self):
+        self.assertEqual(os.environ.get("SPIRAL_BROKER_ROOT"), "/nonexistent")
+        self.assertEqual(str(temple_flow_wire.BROKER_ROOT), "/nonexistent")
+        self.assertFalse(temple_flow_wire.BROKER_ROOT.exists())
+
+    def test_broker_available_is_false_so_every_read_helper_short_circuits(self):
+        """_broker_auth returns at this guard, before `import requests`."""
+        self.assertFalse(temple_flow_wire.broker_available())
+        auth = temple_flow_wire._broker_auth()
+        self.assertIs(auth["ok"], False)
+        self.assertEqual(auth["note"], "broker not on this machine")
+
+    def test_the_pin_survives_a_hostile_environment(self):
+        """setdefault would NOT have been enough, and this is the receipt.
+
+        The launchd plist exports SPIRAL_BROKER_ROOT=/Users/tony_studio/
+        spiral-broker; any shell that inherited the daemon's environment would
+        have defeated `os.environ.setdefault`. The module force-sets, so the
+        value that reaches BROKER_ROOT is the pin no matter what was exported.
+        """
+        self.assertNotIn("spiral-broker", str(temple_flow_wire.BROKER_ROOT))
+
+
+class TestReviewFixes20260904(unittest.TestCase):
+    """The suggestion-tier fixes from the 2026-09-04 review, each pinned."""
+
+    ET = temple_flow_wire.ET
+
+    def at(self, hour: int, minute: int = 0, day: int = 3) -> datetime:
+        return datetime(2026, 9, day, hour, minute, tzinfo=self.ET)
+
+    def night_book(self, **kw) -> dict:
+        book = base_book(
+            in_rth=False, armed=False, quotes_as_of="2026-09-03T20:00:00-04:00"
+        )
+        book.update(kw)
+        return book
+
+    # --- suggestion 1: the planner's own fail-open -------------------------
+
+    def test_an_unproven_orders_leg_proposes_nothing(self):
+        """THE `no_open_exposure` FAIL-OPEN, one lane over from blocker 1.
+
+        With orders_ok False, compute_features sets has_working_entry=False
+        (existing_entry is only consulted when the leg is proven), so
+        check_conditions computed no_open_exposure=True — the plan file
+        asserting "nothing is open on this symbol" on a cycle where the daemon
+        could not look. No wrong order could post through it; the cost was a
+        false statement in the document a human approves ON.
+        """
+        fake = history_source(default=synth_history(end=18.30, step=0.038))
+        with tempfile.TemporaryDirectory() as tmpdir, no_network(), patched(
+            "fetch_daily_history", fake
+        ):
+            root = Path(tmpdir)
+            run_cycle(
+                example_rules(),
+                self.night_book(orders_ok=False),
+                live=False,
+                broker_note="test",
+                repo_root=root,
+                now=self.at(20),
+            )
+            plan = json.loads(plans_in(root)[0].read_text())
+            self.assertEqual(plan["candidates"], [])
+            self.assertEqual(plan["symbols"]["ETHA"]["reason"], "orders_unproven")
+            self.assertIsNone(plan["symbols"]["ETHA"]["ticket"])
+            self.assertIs(plan["coverage"]["orders_ok"], False)
+            # and it refused BEFORE spending a history call on a blind book
+            self.assertEqual(fake.seen, [])
+
+    # --- suggestion 7: a saturated risk box proposes nothing ---------------
+
+    def test_a_blocked_risk_box_proposes_nothing(self):
+        """max_opens is not day-scoped, so a saturated box is not a state that
+        tomorrow clears. A candidate that cannot execute today or tomorrow does
+        not belong in front of the human."""
+        fake = history_source(default=synth_history(end=18.30, step=0.038))
+        rules = example_rules()
+        rules.setdefault("risk", {})["max_opens"] = 1
+        with tempfile.TemporaryDirectory() as tmpdir, no_network(), patched(
+            "fetch_daily_history", fake
+        ):
+            root = Path(tmpdir)
+            plan = temple_flow_wire.build_plan(
+                rules, self.night_book(), repo_root=root, now=self.at(20)
+            )
+            self.assertEqual(plan["candidates"], [])
+            self.assertEqual(plan["symbols"]["ETHA"]["reason"], "risk_box_blocked")
+            self.assertIs(plan["risk_box"]["ok"], False)
+            self.assertTrue(plan["symbols"]["ETHA"]["risk_box"])
+            self.assertEqual(fake.seen, [])
+
+    # --- suggestion 2: the re-evaluation refetch does not hold the lane ----
+
+    def test_the_reevaluation_refetch_uses_the_short_timeout(self):
+        """That refetch runs inside RTH and BEFORE plan_actions in run_cycle,
+        so a hung Schwab read there delays a PROTECT stop. It gets a
+        single-digit budget; the planner keeps the long one."""
+        self.assertLess(temple_flow_wire.HISTORY_TIMEOUT_REEVAL_S, 10)
+        self.assertGreater(temple_flow_wire.HISTORY_TIMEOUT_S, 10)
+        up = history_source(default=synth_history(end=18.30, step=0.038))
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            outbox = root / "config" / "outbox"
+            outbox.mkdir(parents=True)
+            t = ticket(
+                qty=11,
+                stop=17.98,
+                validity={
+                    "max_last": 18.69,
+                    "min_sma20_over_sma50": True,
+                    "max_data_age_minutes": 60.0,
+                },
+            )
+            (outbox / (t["id"] + ".json")).write_text(json.dumps(t))
+            book = base_book(
+                in_rth=True,
+                armed=True,
+                quotes_as_of=(self.at(10) - timedelta(minutes=2)).isoformat(),
+                quotes={
+                    "ETHA": {
+                        "last": 18.50,
+                        "quote_time": int(self.at(10).timestamp() * 1000),
+                    },
+                    "IBIT": {"last": 45.0},
+                    "NVO": {"last": 45.81},
+                    "NOK": {"last": 10.20},
+                },
+            )
+            with recording_broker(), patched(
+                "place_gtc_bracket",
+                lambda **kw: {"http": 201, "order_id": "X", "error": ""},
+            ), patched("fetch_daily_history", up):
+                run_cycle(
+                    example_rules(),
+                    book,
+                    live=True,
+                    broker_note="test",
+                    repo_root=root,
+                    now=self.at(10),
+                )
+            self.assertEqual(
+                up.timeouts, [temple_flow_wire.HISTORY_TIMEOUT_REEVAL_S]
+            )
+
+    def test_the_planner_keeps_the_long_timeout(self):
+        fake = history_source(default=synth_history(end=18.30, step=0.038))
+        with tempfile.TemporaryDirectory() as tmpdir, no_network(), patched(
+            "fetch_daily_history", fake
+        ):
+            root = Path(tmpdir)
+            temple_flow_wire.build_plan(
+                example_rules(), self.night_book(), repo_root=root, now=self.at(20)
+            )
+            # one call per non-protect universe symbol, each taking the
+            # default (the planner passes no timeout, so it gets the long one)
+            self.assertEqual(fake.seen, ["ETHA", "IBIT"])
+            self.assertEqual(fake.timeouts, [None, None])
+
+    # --- suggestion 3: the two windows are decoupled -----------------------
+
+    def test_tightening_the_quote_bound_does_not_shrink_the_plan_window(self):
+        """The coupling ran BACKWARDS: max_data_age_minutes x 24 meant that
+        tightening quote freshness from 60 to 15 minutes — a safety tightening
+        — silently cut the approval window from 24h to 6h, so a 20:00 plan
+        could not be approved at 07:00."""
+        self.assertFalse(hasattr(temple_flow_wire, "PLAN_STALE_MULTIPLIER"))
+        self.assertEqual(temple_flow_wire.MAX_PLAN_AGE_HOURS, 24.0)
+        rules = example_rules()
+        rules.setdefault("strategy", {})["max_data_age_minutes"] = 15.0
+        fake = history_source(default=synth_history(end=18.30, step=0.038))
+        with tempfile.TemporaryDirectory() as tmpdir, no_network(), patched(
+            "fetch_daily_history", fake
+        ):
+            root = Path(tmpdir)
+            plan = temple_flow_wire.build_plan(
+                rules, self.night_book(), repo_root=root, now=self.at(20, day=2)
+            )
+            path = temple_flow_wire.write_plan_file(
+                plan, repo_root=root, now=self.at(20, day=2)
+            )
+            tid = plan["candidates"][0]
+            self.assertEqual(
+                plan["symbols"]["ETHA"]["ticket"]["validity"][
+                    "max_data_age_minutes"
+                ],
+                15.0,
+            )
+            # 11 hours later: inside the 24h plan window, far outside 15min x 24
+            rc = temple_flow_wire.cmd_approve_plan(
+                str(path), tid, repo_root=root, now=self.at(7, day=3)
+            )
+            self.assertEqual(rc, 0, "a tighter QUOTE bound must not bar approval")
+
+    # --- suggestion 4: an approved ticket has a shelf life -----------------
+
+    def test_approval_stamps_an_expires_at_at_the_next_session_close(self):
+        """Before this, an approved ticket was bounded by PRICE and TREND only,
+        so an idea approved Monday could post Thursday if the market happened
+        back into the band. expires_at is already enforced terminally as
+        `ticket_expired`, so this is stamping, not new machinery."""
+        fake = history_source(default=synth_history(end=18.30, step=0.038))
+        with tempfile.TemporaryDirectory() as tmpdir, no_network(), patched(
+            "fetch_daily_history", fake
+        ):
+            root = Path(tmpdir)
+            plan = temple_flow_wire.build_plan(
+                example_rules(), self.night_book(), repo_root=root, now=self.at(20)
+            )
+            path = temple_flow_wire.write_plan_file(
+                plan, repo_root=root, now=self.at(20)
+            )
+            tid = plan["candidates"][0]
+            # approved Thursday 21:00 -> Friday's 16:00 close
+            self.assertEqual(
+                temple_flow_wire.cmd_approve_plan(
+                    str(path), tid, repo_root=root, now=self.at(21)
+                ),
+                0,
+            )
+            t = json.loads((root / "config" / "outbox" / (tid + ".json")).read_text())
+            self.assertEqual(t["expires_at"], self.at(16, day=4).isoformat())
+            # and the wire already treats that as terminal
+            reason, _ = temple_flow_wire.ticket_wait_bounds_refusal(
+                t, example_rules(), self.at(17, day=4)
+            )
+            self.assertEqual(reason, "ticket_expired")
+            self.assertNotIn("ticket_expired", temple_flow_wire.WAIT_REFUSALS)
+
+    def test_a_hand_set_expires_at_is_not_overwritten(self):
+        """A deadline a human already wrote is the human's call."""
+        fake = history_source(default=synth_history(end=18.30, step=0.038))
+        with tempfile.TemporaryDirectory() as tmpdir, no_network(), patched(
+            "fetch_daily_history", fake
+        ):
+            root = Path(tmpdir)
+            plan = temple_flow_wire.build_plan(
+                example_rules(), self.night_book(), repo_root=root, now=self.at(20)
+            )
+            tid = plan["candidates"][0]
+            plan["symbols"]["ETHA"]["ticket"]["expires_at"] = "2026-09-30T16:00:00"
+            path = temple_flow_wire.write_plan_file(
+                plan, repo_root=root, now=self.at(20)
+            )
+            temple_flow_wire.cmd_approve_plan(
+                str(path), tid, repo_root=root, now=self.at(21)
+            )
+            t = json.loads((root / "config" / "outbox" / (tid + ".json")).read_text())
+            self.assertEqual(t["expires_at"], "2026-09-30T16:00:00")
+
+    def test_session_close_after_skips_the_weekend(self):
+        cases = {
+            # Thu 08:00 -> today's close; Thu 16:30 -> Friday
+            self.at(8, day=3): self.at(16, day=3),
+            self.at(16, 30, day=3): self.at(16, day=4),
+            # Fri after the close, Sat and Sun all land on Monday
+            self.at(16, 30, day=4): self.at(16, day=7),
+            self.at(10, day=5): self.at(16, day=7),
+            self.at(21, day=6): self.at(16, day=7),
+        }
+        for when, want in cases.items():
+            with self.subTest(when=when.isoformat()):
+                self.assertEqual(temple_flow_wire.session_close_after(when, 1), want)
+        # never in the past, whatever the input
+        for when in cases:
+            self.assertGreater(temple_flow_wire.session_close_after(when, 1), when)
+
+    # --- suggestion 8: an argv id must not become a path -------------------
+
+    def test_a_ticket_id_carrying_a_path_separator_is_refused(self):
+        """The id is interpolated into config/outbox/<id>.json. Generated ids
+        cannot carry a separator; a hand-edited plan can."""
+        fake = history_source(default=synth_history(end=18.30, step=0.038))
+        with tempfile.TemporaryDirectory() as tmpdir, no_network(), patched(
+            "fetch_daily_history", fake
+        ):
+            root = Path(tmpdir)
+            plan = temple_flow_wire.build_plan(
+                example_rules(), self.night_book(), repo_root=root, now=self.at(20)
+            )
+            escape = "../../../../tmp/tf-escape"
+            plan["symbols"]["ETHA"]["ticket"]["id"] = escape
+            plan["candidates"] = [escape]
+            path = temple_flow_wire.write_plan_file(
+                plan, repo_root=root, now=self.at(20)
+            )
+            rc = temple_flow_wire.cmd_approve_plan(
+                str(path), escape, repo_root=root, now=self.at(21)
+            )
+            self.assertEqual(rc, 2)
+            self.assertFalse(Path("/tmp/tf-escape.json").exists())
+            self.assertEqual(sorted((root / "config" / "outbox").glob("*.json")), [])
+
+    def test_the_generated_id_shape_still_approves(self):
+        """The charset check must not exclude anything the planner writes."""
+        self.assertTrue(
+            temple_flow_wire._SAFE_TICKET_ID.match("TF-PLAN-20260903-2000-ETHA")
+        )
+        for bad in ("../x", "a/b", "", ".", "..", "/abs", "x\x00y"):
+            self.assertIsNone(temple_flow_wire._SAFE_TICKET_ID.match(bad), bad)
 
 
 if __name__ == "__main__":
