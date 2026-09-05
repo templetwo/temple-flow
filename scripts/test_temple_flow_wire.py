@@ -2574,8 +2574,17 @@ def never_called_history(symbol, days=None, timeout=None):
 
 
 def plans_in(root: Path) -> list:
+    """Every PLAN file. Dotfiles are not plans.
+
+    pathlib's glob, unlike the shell's, matches leading dots, so a bare
+    `d.glob("*.json")` returns `.last_plan.json` — the artifact-cadence state
+    file — and every assertion in this file of the form `len(files) == 1` or
+    `files[0].name` would break on a file that is not a plan.
+    """
     d = root / "config" / "plans"
-    return sorted(d.glob("*.json")) if d.exists() else []
+    if not d.exists():
+        return []
+    return sorted(p for p in d.glob("*.json") if not p.name.startswith("."))
 
 
 class TestOffHoursPlanning(unittest.TestCase):
@@ -2848,6 +2857,471 @@ class TestOffHoursPlanning(unittest.TestCase):
             )
             leftovers = sorted((root / "config" / "plans").glob("*.tmp"))
             self.assertEqual(leftovers, [])
+
+
+class TestPlanArtifactCadence(unittest.TestCase):
+    """Evaluation runs every cycle; the ARTIFACT is written on change only.
+
+    OpenAI seat Sol, 2026-09-05 11:15 EDT: "separate evaluation cadence from
+    artifact cadence. Running every 15 minutes may be useful; writing ~96
+    materially identical plan files per day while max_opens remains unchanged
+    is not."
+
+    EVERY TEST HERE FAILS ON 214c0de FOR THE SAME STRUCTURAL REASON — that tip
+    writes one plan file per cycle unconditionally and keeps no state — but the
+    per-test docstring names the exact assertion that goes red, because "it
+    writes too many files" is not an assertion and a test that cannot say which
+    line fails is not a regression test.
+
+    THE FIXTURE REPRODUCES THE MEASURED STUDIO STATE: four opens against
+    max_opens 4, which is the state that produced four identical plan files in
+    four cycles on 2026-09-05. Each test asserts the fixture actually is that
+    state before asserting anything about cadence, so a fixture that drifted
+    fails as a fixture rather than passing as a feature.
+    """
+
+    ET = temple_flow_wire.ET
+
+    def at(self, hour: int, minute: int = 0, day: int = 5) -> datetime:
+        return datetime(2026, 9, day, hour, minute, tzinfo=self.ET)
+
+    def blocked_book(self, **kw) -> dict:
+        """Four opens, max_opens 4. NON-UNIVERSE fillers on purpose.
+
+        The two extra opens are AAPL/MSFT rather than ETHA/IBIT: a position in
+        a live-universe symbol would ALSO set has_working_entry/position_qty on
+        that symbol and change the strategy's answer, so dropping one to test
+        `opens 4 -> 3` would move two terms at once and prove nothing about the
+        risk box.
+        """
+        book = base_book(
+            in_rth=False,
+            armed=False,
+            quotes_as_of="2026-09-05T20:00:00-04:00",
+            positions=[
+                {"symbol": "NVO", "qty": 1},
+                {"symbol": "NOK", "qty": 1},
+                {"symbol": "AAPL", "qty": 1},
+                {"symbol": "MSFT", "qty": 1},
+            ],
+        )
+        book.update(kw)
+        return book
+
+    def cycle(self, root, book, now, rules=None):
+        return run_cycle(
+            rules if rules is not None else example_rules(),
+            book,
+            live=False,
+            broker_note="test",
+            repo_root=root,
+            now=now,
+        )
+
+    def plan_file_lines(self, out) -> list:
+        return [a for a in out if a.get("op") == "plan_file"]
+
+    def state_file(self, root: Path) -> Path:
+        return root / "config" / "plans" / ".last_plan.json"
+
+    def assert_box_is_the_studio_state(self, plan: dict) -> None:
+        self.assertIs(plan["risk_box"]["ok"], False)
+        self.assertEqual(plan["risk_box"]["opens"], 4)
+        self.assertTrue(
+            any(r.startswith("max_opens") for r in plan["risk_box"]["reasons"]),
+            plan["risk_box"]["reasons"],
+        )
+        self.assertEqual(plan["symbols"]["ETHA"]["reason"], "risk_box_blocked")
+
+    # --- 1. the pileup itself -------------------------------------------
+
+    def test_repeated_unchanged_blocked_cycles_write_exactly_one_plan(self):
+        """FAILS ON 214c0de: assertEqual(len(plans_in(root)), 1) gets 3.
+
+        This is Sol's acceptance test, first half, and the measured Studio
+        state: three cycles, one unchanged decision, one artifact.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir, no_network(), patched(
+            "fetch_daily_history", never_called_history
+        ):
+            root = Path(tmpdir)
+            outs = [
+                self.cycle(root, self.blocked_book(), self.at(20, m))
+                for m in (0, 15, 30)
+            ]
+            files = plans_in(root)
+            self.assertEqual(len(files), 1, files)
+            self.assertEqual(files[0].name, "2026-09-05_2000.json")
+            self.assert_box_is_the_studio_state(json.loads(files[0].read_text()))
+
+            first, second, third = (self.plan_file_lines(o)[0] for o in outs)
+            self.assertEqual(first["execute"], "written")
+            self.assertEqual(second["execute"], "unchanged")
+            self.assertEqual(third["execute"], "unchanged")
+            # the unchanged line points at the plan that still stands, so an
+            # operator reading the log is never told "nothing" without being
+            # told where the standing answer lives.
+            self.assertEqual(second["path"], str(files[0]))
+            self.assertEqual(third["path"], str(files[0]))
+            self.assertEqual(second["cycles_since_write"], 1)
+            self.assertEqual(third["cycles_since_write"], 2)
+            self.assertEqual(second["fingerprint"], third["fingerprint"])
+            # the LOG carries a 12-hex prefix; the state file and the plan file
+            # carry the whole hash. Asserted rather than assumed, because a log
+            # that printed the full sha256 every cycle would be its own pileup.
+            self.assertEqual(len(second["fingerprint"]), 12)
+            # and every line is still literally sent/mutated False
+            for line in (first, second, third):
+                self.assertIs(line["sent"], False)
+                self.assertIs(line["mutated"], False)
+
+            # evaluation cadence is NOT reduced: the per-symbol reasoning is
+            # printed every cycle. Only the artifact is bounded.
+            for o in outs:
+                self.assertEqual(
+                    [a["symbol"] for a in o if a.get("op") == "plan"],
+                    ["ETHA", "IBIT"],
+                )
+
+            state = json.loads(self.state_file(root).read_text())
+            self.assertEqual(len(state["fingerprint"]), 64)
+            self.assertEqual(state["fingerprint"][:12], second["fingerprint"])
+            self.assertEqual(
+                state["fingerprint"],
+                json.loads(files[0].read_text())["fingerprint"],
+            )
+            self.assertEqual(state["cycles_since_write"], 2)
+            self.assertEqual(Path(state["path"]).name, files[0].name)
+
+    def test_an_unchanged_CANDIDATE_cycle_writes_one_plan(self):
+        """The blocked path is not enough coverage, and this is why.
+
+        A ticket's `id` is TF-PLAN-<YYYYMMDD>-<HHMM>-<SYM> and it carries
+        `planned_at` and `source_plan` — three separate copies of the cycle's
+        own clock, present ONLY when a candidate exists. Fingerprint the ticket
+        naively and the blocked-box tests all pass while the feature is inert
+        for every cycle that actually proposes a trade: the pileup survives
+        exactly where the files are worth reading. Box OPEN, real candidate,
+        two cycles, one file.
+
+        FAILS ON 214c0de: assertEqual(len(files), 1) gets 2.
+        """
+        fake = history_source(default=synth_history(end=18.30, step=0.038))
+        with tempfile.TemporaryDirectory() as tmpdir, no_network(), patched(
+            "fetch_daily_history", fake
+        ):
+            root = Path(tmpdir)
+            book = base_book(
+                in_rth=False,
+                armed=False,
+                quotes_as_of="2026-09-05T20:00:00-04:00",
+            )
+            self.cycle(root, book, self.at(20, 0))
+            out = self.cycle(root, book, self.at(20, 15))
+
+            files = plans_in(root)
+            self.assertEqual(len(files), 1, files)
+            plan = json.loads(files[0].read_text())
+            # the fixture really did propose something, or this proves nothing
+            self.assertEqual(plan["candidates"], ["TF-PLAN-20260905-2000-ETHA"])
+            self.assertEqual(plan["symbols"]["ETHA"]["decision"], "candidate")
+            self.assertEqual(self.plan_file_lines(out)[0]["execute"], "unchanged")
+
+    # --- 2. the risk box moved ------------------------------------------
+
+    def test_a_changed_risk_box_opens_4_to_3_writes_a_new_plan(self):
+        """FAILS ON 214c0de: assertEqual(len(plans_in(root)), 2) gets 3.
+
+        Sol's acceptance test, second half. Two unchanged blocked cycles then
+        one cycle where the box opens; the unchanged repeat is INSIDE the test
+        on purpose, so the assertion separates "wrote on change" from
+        214c0de's "wrote on everything".
+        """
+        fake = history_source(default=synth_history(end=18.30, step=0.038))
+        with tempfile.TemporaryDirectory() as tmpdir, no_network(), patched(
+            "fetch_daily_history", fake
+        ):
+            root = Path(tmpdir)
+            self.cycle(root, self.blocked_book(), self.at(20, 0))
+            self.cycle(root, self.blocked_book(), self.at(20, 15))
+            self.assertEqual(len(plans_in(root)), 1, plans_in(root))
+
+            three = self.blocked_book(
+                positions=[
+                    {"symbol": "NVO", "qty": 1},
+                    {"symbol": "NOK", "qty": 1},
+                    {"symbol": "AAPL", "qty": 1},
+                ]
+            )
+            out = self.cycle(root, three, self.at(20, 30))
+
+            files = plans_in(root)
+            self.assertEqual(len(files), 2, files)
+            self.assertEqual(files[1].name, "2026-09-05_2030.json")
+            self.assertEqual(self.plan_file_lines(out)[0]["execute"], "written")
+
+            before = json.loads(files[0].read_text())
+            after = json.loads(files[1].read_text())
+            self.assert_box_is_the_studio_state(before)
+            self.assertIs(after["risk_box"]["ok"], True)
+            self.assertEqual(after["risk_box"]["opens"], 3)
+            self.assertNotEqual(before["fingerprint"], after["fingerprint"])
+            self.assertIs(after["snapshot"], False)
+
+    # --- 3. the grid ------------------------------------------------------
+
+    def test_sub_grid_price_noise_is_not_change_and_a_grid_step_is(self):
+        """FAILS ON 214c0de: assertEqual(len(plans_in(root)), 1) after the
+        18.52 / 45.13 cycle gets 2.
+
+        18.50 and 18.52 are the same nickel (cents 1850 and 1852 both floor to
+        bucket 370); 18.57 is the next one. Same for IBIT at the measured
+        45.11: 45.13 is still bucket 902, 45.17 is 903. The box stays blocked
+        throughout, so `last` reaches the fingerprint through compute_features
+        and NOTHING else in the plan moves — this measures the grid and only
+        the grid.
+
+        THE LAST PHASE MOVES IBIT ALONE, and it is the one that is not
+        redundant: every other cadence test in this class turns on ETHA, the
+        first symbol of LIVE_UNIVERSE and the only one that ever produces a
+        candidate. A payload bug that fingerprinted only the first symbol's
+        features would pass every one of them. Prices are the measured Studio
+        state (ETHA 18.52, IBIT 45.11) so the fixture is the thing being
+        complained about, not a convenient neighbour of it.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir, no_network(), patched(
+            "fetch_daily_history", never_called_history
+        ):
+            root = Path(tmpdir)
+
+            def at_last(etha, ibit):
+                b = self.blocked_book()
+                b["quotes"] = dict(b["quotes"])
+                b["quotes"]["ETHA"] = {"last": etha}
+                b["quotes"]["IBIT"] = {"last": ibit}
+                return b
+
+            self.cycle(root, at_last(18.50, 45.11), self.at(20, 0))
+            self.assertEqual(len(plans_in(root)), 1, plans_in(root))
+
+            # both symbols move, neither leaves its nickel
+            out_sub = self.cycle(root, at_last(18.52, 45.13), self.at(20, 15))
+            self.assertEqual(len(plans_in(root)), 1, plans_in(root))
+            self.assertEqual(self.plan_file_lines(out_sub)[0]["execute"], "unchanged")
+
+            out_step = self.cycle(root, at_last(18.57, 45.13), self.at(20, 30))
+            files = plans_in(root)
+            self.assertEqual(len(files), 2, files)
+            self.assertEqual(self.plan_file_lines(out_step)[0]["execute"], "written")
+
+            # the plan that stands still carries the RAW last it was built on;
+            # quantization is a fingerprint concern, never a reporting one.
+            self.assertEqual(
+                json.loads(files[1].read_text())["symbols"]["ETHA"]["features"]["last"],
+                18.57,
+            )
+
+            # IBIT alone crosses a nickel. ETHA does not move at all.
+            out_ibit = self.cycle(root, at_last(18.57, 45.17), self.at(20, 45))
+            files = plans_in(root)
+            self.assertEqual(len(files), 3, files)
+            self.assertEqual(self.plan_file_lines(out_ibit)[0]["execute"], "written")
+            self.assertEqual(
+                json.loads(files[2].read_text())["symbols"]["IBIT"]["features"]["last"],
+                45.17,
+            )
+
+            # and the same move again, sub-grid, is silence
+            out_quiet = self.cycle(root, at_last(18.57, 45.19), self.at(21, 0))
+            self.assertEqual(len(plans_in(root)), 3, plans_in(root))
+            self.assertEqual(self.plan_file_lines(out_quiet)[0]["execute"], "unchanged")
+
+    # --- 4. the rules moved ------------------------------------------------
+
+    def test_a_changed_rules_file_writes_a_new_plan(self):
+        """FAILS ON 214c0de: assertEqual(len(plans_in(root)), 2) gets 3.
+
+        THE MUTATED FIELD IS CHOSEN TO ISOLATE THE RULES TERM. `_risk` does not
+        read max_ticket_notional_pct (temple_flow_wire.py:407-414) and
+        `ticket_notional_cap` is only reached from `size_candidate`, which a
+        blocked box never runs. So the two plan files are byte-identical in
+        their `symbols` block, asserted below: the ONLY thing that can have
+        moved the fingerprint is the rules hash. Mutate a strategy param or an
+        entry cap instead and the test passes for the wrong reason.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir, no_network(), patched(
+            "fetch_daily_history", never_called_history
+        ):
+            root = Path(tmpdir)
+            self.cycle(root, self.blocked_book(), self.at(20, 0))
+            self.cycle(root, self.blocked_book(), self.at(20, 15))
+            self.assertEqual(len(plans_in(root)), 1, plans_in(root))
+
+            edited = example_rules()
+            edited["risk"]["max_ticket_notional_pct"] = 0.20
+            out = self.cycle(root, self.blocked_book(), self.at(20, 30), rules=edited)
+
+            files = plans_in(root)
+            self.assertEqual(len(files), 2, files)
+            self.assertEqual(self.plan_file_lines(out)[0]["execute"], "written")
+            before = json.loads(files[0].read_text())
+            after = json.loads(files[1].read_text())
+            self.assertEqual(before["symbols"], after["symbols"])
+            self.assertEqual(before["risk_box"], after["risk_box"])
+            self.assertNotEqual(before["fingerprint"], after["fingerprint"])
+
+    # --- 5. liveness -------------------------------------------------------
+
+    def test_the_snapshot_fires_after_the_interval_and_not_before(self):
+        """FAILS ON 214c0de: assertEqual(len(plans_in(root)), 1) after the
+        20:30 cycle gets 2.
+
+        Also pins the OTHER half of the rule, which is the half a liveness
+        feature gets wrong: 0 disables, and a disabled snapshot stays silent
+        across a gap far larger than any interval.
+        """
+        rules = example_rules()
+        rules.setdefault("outbox", {})["plan_snapshot_minutes"] = 60
+        with tempfile.TemporaryDirectory() as tmpdir, no_network(), patched(
+            "fetch_daily_history", never_called_history
+        ):
+            root = Path(tmpdir)
+            self.cycle(root, self.blocked_book(), self.at(20, 0), rules=rules)
+            self.assertEqual(len(plans_in(root)), 1, plans_in(root))
+
+            out_early = self.cycle(root, self.blocked_book(), self.at(20, 30), rules=rules)
+            self.assertEqual(len(plans_in(root)), 1, plans_in(root))
+            self.assertEqual(self.plan_file_lines(out_early)[0]["execute"], "unchanged")
+
+            out_due = self.cycle(root, self.blocked_book(), self.at(21, 0), rules=rules)
+            files = plans_in(root)
+            self.assertEqual(len(files), 2, files)
+            line = self.plan_file_lines(out_due)[0]
+            self.assertEqual(line["execute"], "written")
+            self.assertIs(line["snapshot"], True)
+            self.assertEqual(line["reason"], "snapshot_interval")
+            snap = json.loads(files[1].read_text())
+            self.assertIs(snap["snapshot"], True)
+            # a snapshot is a LIVENESS artifact, not a new decision: same
+            # fingerprint as the plan it re-states.
+            self.assertEqual(snap["fingerprint"], json.loads(files[0].read_text())["fingerprint"])
+
+            # the clock restarted at the snapshot: 30 minutes on is early again
+            out_after = self.cycle(root, self.blocked_book(), self.at(21, 30), rules=rules)
+            self.assertEqual(len(plans_in(root)), 2, plans_in(root))
+            self.assertEqual(self.plan_file_lines(out_after)[0]["execute"], "unchanged")
+
+        off = example_rules()
+        off.setdefault("outbox", {})["plan_snapshot_minutes"] = 0
+        with tempfile.TemporaryDirectory() as tmpdir, no_network(), patched(
+            "fetch_daily_history", never_called_history
+        ):
+            root = Path(tmpdir)
+            self.cycle(root, self.blocked_book(), self.at(20, 0), rules=off)
+            out = self.cycle(root, self.blocked_book(), self.at(20, 0, day=8), rules=off)
+            self.assertEqual(len(plans_in(root)), 1, plans_in(root))
+            self.assertEqual(self.plan_file_lines(out)[0]["execute"], "unchanged")
+
+    def test_plan_snapshot_minutes_defaults_to_360_and_refuses_nonsense(self):
+        """FAILS ON 214c0de: AttributeError, no plan_snapshot_minutes exists.
+
+        The validator is in the shape of outbox_max_wait_days, including the
+        bool refusal: `plan_snapshot_minutes: true` reads as "enabled" and
+        silently becoming a ONE-MINUTE interval would restore the pileup the
+        feature exists to end.
+        """
+        fn = temple_flow_wire.plan_snapshot_minutes
+        self.assertEqual(fn(example_rules()), (360.0, None))
+        self.assertEqual(fn({}), (360.0, None))
+        self.assertEqual(fn({"outbox": {}}), (360.0, None))
+        self.assertEqual(fn({"outbox": {"plan_snapshot_minutes": None}}), (360.0, None))
+        self.assertEqual(fn({"outbox": {"plan_snapshot_minutes": 0}}), (0.0, None))
+        self.assertEqual(fn({"outbox": {"plan_snapshot_minutes": 90}}), (90.0, None))
+        mins, problem = fn({"outbox": {"plan_snapshot_minutes": True}})
+        self.assertEqual(mins, 360.0)
+        self.assertEqual(problem, "plan_snapshot_minutes_unparseable:bool")
+        mins, problem = fn({"outbox": {"plan_snapshot_minutes": "soon"}})
+        self.assertEqual(mins, 360.0)
+        self.assertEqual(problem, "plan_snapshot_minutes_unparseable:str")
+        mins, problem = fn({"outbox": {"plan_snapshot_minutes": -5}})
+        self.assertEqual(mins, 360.0)
+        self.assertEqual(problem, "plan_snapshot_minutes_out_of_range:-5")
+
+    # --- 6. every uncertainty resolves to writing --------------------------
+
+    def test_a_broken_or_missing_state_never_suppresses_a_plan(self):
+        """FAILS ON 214c0de: json.loads(state.read_text()) raises
+        JSONDecodeError — that tip never writes the state file, so the garbage
+        is still sitting there after the cycle.
+
+        THE INVARIANT: the gate's only job is to suppress DUPLICATES. Missing
+        state, unreadable state, and a last plan an operator deleted by hand
+        all resolve to WRITE. The runbook tells the operator `rm
+        config/plans/*.json` is fine, so the deleted-plan case is a documented
+        path, not a hypothetical.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir, no_network(), patched(
+            "fetch_daily_history", never_called_history
+        ):
+            root = Path(tmpdir)
+            state = self.state_file(root)
+            state.parent.mkdir(parents=True, exist_ok=True)
+            state.write_text("{not json at all")
+
+            # the unreadable-state diagnostic is a HELPER-level line: it goes
+            # to the log stream via logj, like write_failed and
+            # cancel_refusal_state, not into run_cycle's return value. Recorded
+            # by standing in for logj rather than by scraping stdout.
+            logged: list = []
+            with patched("logj", logged.append):
+                out = self.cycle(root, self.blocked_book(), self.at(20, 0))
+            self.assertEqual(len(plans_in(root)), 1, plans_in(root))
+            # the garbage was REPLACED, not worked around. Asserted FIRST
+            # because it is the claim: 214c0de keeps no state at all, so the
+            # unparseable bytes are still sitting there after the cycle.
+            rewritten = json.loads(state.read_text())
+            self.assertTrue(rewritten["fingerprint"])
+            self.assertEqual(rewritten["cycles_since_write"], 0)
+            line = self.plan_file_lines(out)[0]
+            self.assertEqual(line["execute"], "written")
+            self.assertEqual(line["reason"], "no_last_plan")
+            self.assertTrue(
+                any(
+                    a.get("op") == "plan_state" and a.get("execute") == "unreadable"
+                    for a in logged
+                ),
+                [a for a in logged if a.get("op") == "plan_state"],
+            )
+
+        # a state file that never existed is the same answer, quietly
+        with tempfile.TemporaryDirectory() as tmpdir, no_network(), patched(
+            "fetch_daily_history", never_called_history
+        ):
+            root = Path(tmpdir)
+            logged = []
+            with patched("logj", logged.append):
+                out = self.cycle(root, self.blocked_book(), self.at(20, 0))
+            self.assertEqual(len(plans_in(root)), 1, plans_in(root))
+            self.assertEqual(self.plan_file_lines(out)[0]["reason"], "no_last_plan")
+            # absent state is the NORMAL first boot, not a fault: no diagnostic.
+            self.assertEqual([a for a in logged if a.get("op") == "plan_state"], [])
+
+        # and a last plan the operator deleted by hand must not buy six hours
+        # of silence: the state still points at it, the file is gone, WRITE.
+        with tempfile.TemporaryDirectory() as tmpdir, no_network(), patched(
+            "fetch_daily_history", never_called_history
+        ):
+            root = Path(tmpdir)
+            self.cycle(root, self.blocked_book(), self.at(20, 0))
+            for p in plans_in(root):
+                p.unlink()
+            out = self.cycle(root, self.blocked_book(), self.at(20, 15))
+            files = plans_in(root)
+            self.assertEqual(len(files), 1, files)
+            self.assertEqual(files[0].name, "2026-09-05_2015.json")
+            line = self.plan_file_lines(out)[0]
+            self.assertEqual(line["execute"], "written")
+            self.assertEqual(line["reason"], "last_plan_missing")
 
 
 class TestApprovePlanCli(unittest.TestCase):

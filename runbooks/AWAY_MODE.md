@@ -436,6 +436,11 @@ rather than discover it.
 {
   "schema": "temple_flow_plan_v1",
   "planned_at": "2026-09-03T20:00:00-04:00",     // ET ISO, the cycle's own clock
+  "fingerprint": "8c6945e1...cfc8",              // sha256 of the DECISION; see
+                                                 // Artifact cadence below. Not
+                                                 // part of its own input.
+  "snapshot": false,                             // true = a liveness re-state of
+                                                 // an unchanged decision
   "equity": 596.86,
   "in_rth": false,
   "book_source": "schwab_read",
@@ -496,18 +501,119 @@ Dropped into `config/outbox/` unchanged it is ignored, because the loader wants
 | `strategy_declined` | the strategy said no. `failed_checks` names every condition that did not hold. |
 | `qty_clipped_to_zero` / `stop_not_below_limit` / `notional_cap_uncomputable` / `equity_unknown` | the idea was fine and the wire could not size it. |
 
+### Artifact cadence — the planner writes on CHANGE, not once per cycle
+
+> **OpenAI seat Sol, 2026-09-05 11:15 EDT:** *"separate evaluation cadence from
+> artifact cadence. Running every 15 minutes may be useful; writing ~96
+> materially identical plan files per day while max_opens remains unchanged is
+> not. Fingerprint the decision-relevant state and write on semantic change,
+> with a bounded periodic snapshot only if you need liveness evidence."*
+
+Measured on the Studio, 2026-09-05: four off-hours cycles, four plan files, all
+four saying `risk_box_blocked: max_opens 4 >= 4` with ETHA last 18.52 and IBIT
+45.11. About **64 files a weeknight and 96 a weekend day**, none of them
+actionable and all of them needing to be opened to find that out.
+
+**The rule.** Every off-hours cycle still builds the whole plan and still prints
+one `op=plan` line per symbol. Before writing, the wire takes a **fingerprint**
+of the decision-relevant state and compares it to the last one:
+
+- **different** → write `config/plans/<date>_<time>.json` as before,
+  `execute: "written"`, `reason: "changed"`.
+- **the same** → write nothing, log
+  `op=plan_file execute="unchanged"` carrying the **path of the plan that still
+  stands**, the fingerprint prefix, and `cycles_since_write`.
+
+**Evaluation cadence is unchanged, and so is broker load.** `build_plan` runs
+every tick and the same one `pricehistory` call per live-universe symbol still
+happens — you cannot know a decision is unchanged without computing it. Only the
+**artifact** is bounded. Nothing about the approve door changed either:
+`--approve-plan` works on any plan file, exactly as before.
+
+**What the fingerprint watches** (an allowlist, `plan_fingerprint_payload` in
+`scripts/temple_flow_wire.py`): per symbol the decision and reason, the checks
+and failed checks, coverage (`history_ok` / `quotes_ok`), the candidate ticket's
+qty / limit / stop / validity bounds; the risk box's `ok`, `opens` and the
+**names** of the clauses that fired; `strategy_params`; and a **sha256 of the
+rules**, not its mtime — a checkout or an `rsync` bumps mtime without changing a
+decision.
+
+**What it deliberately ignores.** Timestamps and raw quotes, per the rule.
+Market features are **quantized** so noise is not change: prices to a **5-cent
+grid** in integer cents, SMA slopes to 3 decimals, ATR to the cent, `ret5d` to a
+basis point. The nickel is justified rather than guessed — `max_drift_pct` is
+0.01, so an approved ETHA ticket near $18.50 is already invalidated at execution
+by ~18.5 cents of drift, and a nickel is about a quarter of that band. A
+sub-nickel move cannot flip a decision this planner makes. The risk box's reason
+*strings* are ignored in favour of the clause names, because
+`day_breaker: day_pnl=-12.3456 …` carries four decimals of live P&L and would
+re-create the pileup by itself.
+
+**The liveness snapshot.** So an unchanged decision never looks like a wedged
+daemon, an artifact is written anyway once the interval has elapsed, marked
+`"snapshot": true` in the file and on the log line
+(`reason: "snapshot_interval"`).
+
+| rule | default | meaning |
+| --- | --- | --- |
+| `outbox.plan_snapshot_minutes` | **360** (6 hours) | write an unchanged plan at least this often. Covers a 16:00→09:00 stretch with a couple of proofs of life, at ~4 files a day against the ~96 measured. |
+| `outbox.plan_snapshot_minutes: 0` | — | **disables snapshots entirely.** An unchanged decision then produces no artifact however long it stands. |
+
+An unusable value (a bool, a string, a negative) falls back to **360** with
+`op=plan_snapshot_rule execute="unusable_value"` in the log — never to "no
+snapshots", because the failure of a liveness feature must not be silence. Note
+the asymmetry with `outbox.max_wait_days` next door: absent there means *no
+bound*; absent here means *the default*.
+
+**The state file: `config/plans/.last_plan.json`.** Holds `fingerprint`, `path`
+of the last written plan, `written_at`, and `cycles_since_write`. It is
+git-ignored, and it is **dotted on purpose** so `rm config/plans/*.json` — which
+this runbook recommends — cannot delete it by accident from a shell. Deleting it
+anyway is safe: the next cycle treats it as "no last plan" and writes.
+
+**THE INVARIANT, and it is the whole safety story: the gate's only job is to
+suppress duplicates, and every uncertainty resolves to WRITING.** No state file,
+unreadable state file, a last plan you deleted by hand, a fingerprint that would
+not compute, an unparseable timestamp — all of them write. State is saved only
+after a *proven* write, so a failed write cannot buy six hours of silence. A bug
+here costs a redundant file, never a missing plan.
+
+**Acceptance test** (Sol's, and it is in the suite as
+`TestPlanArtifactCadence`): repeated unchanged blocked cycles produce **no
+duplicate plan artifacts**; a changed risk / market / signal state produces a
+**new one**. Both halves are asserted, plus a sub-grid price move that must
+*not* write, a grid-step move that must, a rules edit that must, the snapshot
+firing after the interval and not before, and an unchanged cycle that still
+proposes a live candidate — that last one because a ticket `id` embeds the
+cycle's own HHMM, and fingerprinting it naively would leave the feature inert on
+exactly the cycles worth reading.
+
+```bash
+# what an unchanged night looks like in the daemon log (path from the plist,
+# deploy/com.templetwo.temple-flow-wire.plist -> StandardOutPath)
+grep '"op":"plan_file"' ~/Library/Logs/temple-flow-wire.log | tail -5
+# {"op":"plan_file","execute":"unchanged","reason":"fingerprint_unchanged",
+#  "fingerprint":"8c6945e13fc7","cycles_since_write":7,"path":".../2026-09-05_2000.json", ...}
+```
+
 ### Housekeeping, stated rather than discovered
 
 Two costs of this lane, both small and both yours to bound if you want them
 bounded:
 
-- **Plan files accumulate.** The daemon ticks every 900s around the clock, so a
-  weeknight writes roughly 60 plan files and a weekend writes several hundred.
-  They are git-ignored and a few KB each. Nothing prunes them, on purpose — a
-  daemon that deletes files on a money-adjacent repo is a bigger risk than a
-  directory that grows. `rm config/plans/*.json` by hand whenever you like; the
-  wire holds no state about them, and an approved ticket carries everything it
-  needs in its own file.
+- **Plan files accumulate, but slowly now.** CORRECTED 2026-09-05: this bullet
+  used to say a weeknight writes roughly 60 files and a weekend several hundred,
+  and that the wire "holds no state about them". Both are now false. The daemon
+  still ticks every 900s around the clock, but it writes only on a changed
+  decision plus the `plan_snapshot_minutes` liveness snapshot — see **Artifact
+  cadence** above — and it keeps one state file,
+  `config/plans/.last_plan.json`. They are git-ignored and a few KB each.
+  Nothing prunes them, on purpose — a daemon that deletes files on a
+  money-adjacent repo is a bigger risk than a directory that grows.
+  `rm config/plans/*.json` by hand whenever you like: the shell's glob does not
+  match the dotted state file, and even if you delete that too, the next cycle
+  writes a fresh plan. An approved ticket carries everything it needs in its own
+  file and is unaffected either way.
 - **Two extra Schwab reads per off-hours cycle**, one `pricehistory` call per
   live-universe symbol. Read-only, and skipped entirely when the quotes leg did
   not prove.

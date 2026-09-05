@@ -17,6 +17,7 @@ plan_actions(rules, book) is pure and unit-testable (no network).
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -2307,6 +2308,456 @@ def write_plan_file(
         return None
 
 
+# --- artifact cadence: write on CHANGE, not once per cycle -------------------
+# Anthony, 2026-09-05, asked for the plan-file pileup to be bounded. Measured on
+# the Studio that morning: four off-hours cycles, four files, all four saying
+# `risk_box_blocked: max_opens 4 >= 4` with ETHA last 18.52 and IBIT 45.11 —
+# about 64 files a weeknight and 96 a weekend day, none of which an operator can
+# act on and all of which have to be read to find that out.
+#
+# The OpenAI seat Sol named the shape, 2026-09-05 11:15 EDT, verbatim:
+#
+#   "separate evaluation cadence from artifact cadence. Running every 15
+#    minutes may be useful; writing ~96 materially identical plan files per day
+#    while max_opens remains unchanged is not. Fingerprint the decision-relevant
+#    state and write on semantic change, with a bounded periodic snapshot only
+#    if you need liveness evidence."
+#
+# EVALUATION CADENCE IS UNCHANGED. build_plan still runs every off-hours cycle,
+# the same two Schwab reads still happen, and the per-symbol `op=plan` lines are
+# still printed every time. You cannot know a decision is unchanged without
+# computing it. Only the ARTIFACT is bounded.
+#
+# THE INVARIANT, and it is the entire safety story of this block:
+#
+#     THE GATE'S ONLY JOB IS TO SUPPRESS DUPLICATES.
+#     EVERY UNCERTAINTY RESOLVES TO WRITING.
+#
+# No state file, unreadable state file, a last plan the operator deleted by
+# hand, a fingerprint that would not compute, an unparseable timestamp, a
+# nonsense rule value — every one of them writes. A bug in here must cost a
+# redundant file, never a missing plan. This is the same fail-CLOSED shape the
+# outbox gate uses, pointed the other way: there, doubt refuses to post; here,
+# doubt refuses to stay silent.
+
+#: config/plans/.last_plan.json — the cadence memory, and the ONLY state this
+#: lane keeps. Dotted deliberately: the runbook tells the operator that
+#: `rm config/plans/*.json` is a fine way to clean up, and the shell's glob does
+#: not match a leading dot, so the documented cleanup cannot delete the state
+#: file by accident. If it is deleted anyway, the next cycle writes.
+PLAN_STATE_FILE = ".last_plan.json"
+
+#: Default liveness snapshot: write an artifact at least this often even when
+#: nothing changed, so an operator can see the planner is alive rather than
+#: wedged. Six hours covers any single off-hours stretch (16:00 → 09:00) with a
+#: couple of proofs of life and costs ~4 files a day against the ~96 measured.
+#: `outbox.plan_snapshot_minutes: 0` disables snapshots entirely.
+DEFAULT_PLAN_SNAPSHOT_MINUTES = 360.0
+
+#: Price grid, in cents. WHY A NICKEL: `strategy.max_drift_pct` is 0.01, so an
+#: approved ETHA ticket near $18.50 is already invalidated at execution by about
+#: 18.5 cents of drift (validity.max_last / min_last). Five cents is roughly a
+#: quarter of the band that kills the idea outright, so a sub-nickel move
+#: provably cannot flip any decision this planner makes. A more expensive symbol
+#: rides the same ABSOLUTE grid and is therefore quantized more finely in
+#: percentage terms — the conservative direction, more artifacts, never fewer.
+_PLAN_PRICE_GRID_CENTS = 5
+#: SMA slopes are dollars per day; 3 decimals is a tenth of a cent per session.
+_PLAN_SLOPE_DECIMALS = 3
+#: ATR is a dollar range; the cent is the tick, so the cent is the grid.
+_PLAN_ATR_DECIMALS = 2
+#: ret5d is a fraction; 4 decimals is one basis point.
+_PLAN_RETURN_DECIMALS = 4
+
+
+def plan_state_path(repo_root: Path | None = None) -> Path:
+    return plan_dir(repo_root) / PLAN_STATE_FILE
+
+
+def _q_price(x: Any) -> int | None:
+    """A price as an INTEGER bucket index on the 5-cent grid.
+
+    Integer cents, never float division: `math.floor(18.55 / 0.05)` is a coin
+    flip on the binary representation at the exact boundary, and a change
+    detector that fires on float dust is the pileup wearing a different hat.
+    Floor division is used rather than int() because it is correct for negative
+    values too — int() truncates toward zero and would give two different
+    buckets the same index around zero.
+    """
+    if x is None or isinstance(x, bool):
+        return None
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(v):
+        return None
+    return int(round(v * 100.0)) // _PLAN_PRICE_GRID_CENTS
+
+
+def _q_round(x: Any, decimals: int) -> int | None:
+    """A float on a 10^-decimals grid, as an integer. None stays None.
+
+    Integer output on purpose: it removes -0.0 vs 0.0 and every other way two
+    equal numbers can serialize differently.
+    """
+    if x is None or isinstance(x, bool):
+        return None
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(v):
+        return None
+    return int(round(v * (10.0 ** decimals)))
+
+
+def _risk_box_clauses(reasons: Any) -> list:
+    """The NAMES of the risk-box clauses that fired, not their formatted numbers.
+
+    `risk_box` renders a reason as e.g.
+    "day_breaker: day_pnl=-12.3456 <= -4.5% of 596.86". Four decimal places of
+    live P&L inside a fingerprint is a detector that fires on every tick — the
+    pileup, rebuilt. WHICH clauses hold is the decision; the numbers behind them
+    are a measurement, and they stay in the plan file where a human reads them.
+    """
+    out = []
+    for r in reasons or []:
+        out.append(str(r).split(":", 1)[0].strip())
+    return sorted(out)
+
+
+def rules_digest(rules: dict) -> str:
+    """sha256 of the rules, deterministically serialized.
+
+    THE HASH, NOT THE MTIME. A checkout, an rsync, a `touch`, or an editor
+    rewriting the file byte-identically all bump mtime without changing a single
+    decision — exactly the noise this feature removes. A hash answers the
+    question actually being asked: did the law change?
+    """
+    blob = json.dumps(rules or {}, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _fingerprint_features(f: dict) -> dict:
+    """The decision-relevant, QUANTIZED half of a symbol's feature set.
+
+    AN ALLOWLIST, NOT A BLOCKLIST, and that is the load-bearing choice here. A
+    blocklist ("copy the plan, drop planned_at") fails OPEN — a field added
+    later leaks a timestamp into the fingerprint, every cycle differs, and the
+    feature silently reverts to writing 96 files a day while still looking
+    installed. There is no alarm for that. An allowlist fails the other way: a
+    new field is simply not watched until someone adds it here, which costs a
+    missed change, and a missed change is visible the moment anyone reads a
+    stale plan.
+
+    DELIBERATELY ABSENT, each because it is a pure function of something that IS
+    here, so including it would add a second noise channel measuring the same
+    fact on a grid that need not align with this one:
+      last_vs_cap        = last - cap
+      dist_to_sma20_pct  = (last - sma20) / sma20
+      *_period / slope_lookback  — they come from strategy_params, fingerprinted
+                                   whole at the top level
+      working_entry_id   — the strategy reads has_working_entry, never the id
+      history_as_of / quote_as_of  — timestamps, excluded by the task's own rule
+    """
+    return {
+        "last": _q_price(f.get("last")),
+        "cap": _q_price(f.get("cap")),
+        "sma20": _q_price(f.get("sma20")),
+        "sma50": _q_price(f.get("sma50")),
+        "sma20_slope": _q_round(f.get("sma20_slope"), _PLAN_SLOPE_DECIMALS),
+        "sma50_slope": _q_round(f.get("sma50_slope"), _PLAN_SLOPE_DECIMALS),
+        "atr14": _q_round(f.get("atr14"), _PLAN_ATR_DECIMALS),
+        "ret5d": _q_round(f.get("ret5d"), _PLAN_RETURN_DECIMALS),
+        "bars": f.get("bars"),
+        "position_qty": f.get("position_qty"),
+        "has_working_entry": bool(f.get("has_working_entry")),
+        "history_ok": bool(f.get("history_ok")),
+        "quotes_ok": bool(f.get("quotes_ok")),
+    }
+
+
+def _fingerprint_ticket(t: dict) -> dict | None:
+    """The candidate ticket as a DECISION, stripped of its identity and clock.
+
+    `id` embeds the cycle's own HHMM (TF-PLAN-20260905-2000-ETHA) and
+    `planned_at` / `source_plan` are timestamps: any of the three in the
+    fingerprint makes every cycle differ and the whole feature inert. That is
+    the single most likely way to ship this broken, which is why they are named
+    here rather than merely omitted.
+
+    `planned_last` and `planned_atr` are echoes of features.last / features.atr14
+    and `rationale` is prose generated from them, so all three are left out for
+    the same reason the derived features are.
+    """
+    if not t:
+        return None
+    v = t.get("validity") or {}
+    return {
+        "symbol": t.get("symbol"),
+        "action": t.get("action"),
+        "side": t.get("side"),
+        "stop_side": t.get("stop_side"),
+        "status": t.get("status"),
+        "risk_stamped": bool(t.get("risk_stamped")),
+        "qty": t.get("qty"),
+        "limit": _q_price(t.get("limit")),
+        "stop": _q_price(t.get("stop")),
+        "validity": {
+            "max_last": _q_price(v.get("max_last")),
+            "min_last": _q_price(v.get("min_last")),
+            "min_sma20_over_sma50": v.get("min_sma20_over_sma50"),
+            "max_data_age_minutes": _q_round(v.get("max_data_age_minutes"), 3),
+        },
+    }
+
+
+def plan_fingerprint_payload(plan: dict, rules: dict) -> dict:
+    """Everything the fingerprint is taken over. Returned separately so a
+    disagreement about what counts as change can be READ rather than guessed.
+    """
+    symbols = {}
+    for sym, entry in (plan.get("symbols") or {}).items():
+        entry = entry or {}
+        sizing = entry.get("sizing") or {}
+        symbols[str(sym)] = {
+            "decision": entry.get("decision"),
+            "reason": entry.get("reason"),
+            "risk_box": _risk_box_clauses(entry.get("risk_box")),
+            "checks": {k: bool(v) for k, v in (entry.get("checks") or {}).items()},
+            "failed_checks": sorted(entry.get("failed_checks") or []),
+            "bars_needed": entry.get("bars_needed"),
+            "history_note": entry.get("history_note"),
+            # sizing's qty and its refusal reason are decisions; risk_dollars,
+            # notional and equity are arithmetic on qty and a price already here.
+            "sizing_qty": sizing.get("qty"),
+            "sizing_reason": sizing.get("reason"),
+            "features": _fingerprint_features(entry.get("features") or {}),
+            "ticket": _fingerprint_ticket(entry.get("ticket")),
+        }
+    box = plan.get("risk_box") or {}
+    cov = plan.get("coverage") or {}
+    return {
+        "v": 1,
+        "book_source": plan.get("book_source"),
+        "in_rth": plan.get("in_rth"),
+        "strategy_module": plan.get("strategy_module"),
+        "strategy_params": plan.get("strategy_params"),
+        "rules_sha256": rules_digest(rules),
+        "risk_box": {
+            "ok": bool(box.get("ok")),
+            "opens": box.get("opens"),
+            "clauses": _risk_box_clauses(box.get("reasons")),
+        },
+        "coverage": {
+            "quotes_ok": bool(cov.get("quotes_ok")),
+            "orders_ok": bool(cov.get("orders_ok")),
+            "history_ok": {
+                str(k): bool(v) for k, v in (cov.get("history_ok") or {}).items()
+            },
+        },
+        # the ticket IDS carry the cycle's HHMM; the SYMBOLS are the decision.
+        "candidate_symbols": sorted(
+            sym
+            for sym, e in (plan.get("symbols") or {}).items()
+            if (e or {}).get("decision") == "candidate"
+        ),
+        "symbols": symbols,
+    }
+
+
+def plan_fingerprint(plan: dict, rules: dict) -> str:
+    """sha256 over the decision-relevant state. Deterministic by construction.
+
+    sort_keys everywhere and integer-quantized numerics, so the same decision
+    hashes the same on any machine, any run, any dict-insertion order.
+    """
+    blob = json.dumps(
+        plan_fingerprint_payload(plan, rules),
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def plan_snapshot_minutes(rules: dict) -> tuple[float, str | None]:
+    """rules['outbox']['plan_snapshot_minutes'] → (minutes, problem).
+
+    Default DEFAULT_PLAN_SNAPSHOT_MINUTES (360 = every 6 hours). `0` DISABLES
+    snapshots: an unchanged decision then produces no artifact at all, however
+    long it stands.
+
+    NOTE THE ASYMMETRY WITH `outbox_max_wait_days`, which is next door and reads
+    almost identically: there, absent means NO bound; here, absent means the
+    default. The two fields answer opposite questions — "how long may a ticket
+    wait before it dies" versus "how long may the planner go without proving it
+    is alive" — and a missing answer to the second one should still produce
+    evidence.
+
+    A bool is refused rather than accepted as 1.0, for the same reason
+    max_wait_days refuses it: `plan_snapshot_minutes: true` reads as "enabled",
+    and silently becoming a ONE-MINUTE interval would restore the exact pileup
+    this feature exists to end. Any unusable value falls back to the default
+    with the problem reported — never to "no snapshots", because the failure of
+    a liveness feature must not be silence.
+    """
+    o = rules.get("outbox")
+    if not isinstance(o, dict) or "plan_snapshot_minutes" not in o:
+        return DEFAULT_PLAN_SNAPSHOT_MINUTES, None
+    raw = o.get("plan_snapshot_minutes")
+    if raw is None:
+        return DEFAULT_PLAN_SNAPSHOT_MINUTES, None
+    if isinstance(raw, bool):
+        return (
+            DEFAULT_PLAN_SNAPSHOT_MINUTES,
+            f"plan_snapshot_minutes_unparseable:{type(raw).__name__}",
+        )
+    try:
+        minutes = float(raw)
+    except (TypeError, ValueError):
+        return (
+            DEFAULT_PLAN_SNAPSHOT_MINUTES,
+            f"plan_snapshot_minutes_unparseable:{type(raw).__name__}",
+        )
+    if not math.isfinite(minutes) or minutes < 0:
+        return (
+            DEFAULT_PLAN_SNAPSHOT_MINUTES,
+            f"plan_snapshot_minutes_out_of_range:{raw}",
+        )
+    return minutes, None
+
+
+def load_plan_state(repo_root: Path | None = None) -> dict:
+    """The last plan's fingerprint and path, or {} — which means "write".
+
+    Unreadable is logged and returns {}, mirroring load_cancel_refusals: the
+    caller then treats it as "no last plan" and writes. A corrupt state file
+    costs one redundant plan, and the write that follows replaces the corruption.
+    """
+    p = plan_state_path(repo_root)
+    if not p.exists():
+        return {}
+    try:
+        d = json.loads(p.read_text())
+    except Exception as e:
+        logj(
+            {
+                "op": "plan_state",
+                "execute": "unreadable",
+                "error": type(e).__name__,
+                "path": str(p),
+                "sent": False,
+                "mutated": False,
+                "dry_run": True,
+            }
+        )
+        return {}
+    if not isinstance(d, dict):
+        logj(
+            {
+                "op": "plan_state",
+                "execute": "unreadable",
+                "error": "NotAnObject",
+                "path": str(p),
+                "sent": False,
+                "mutated": False,
+                "dry_run": True,
+            }
+        )
+        return {}
+    return d
+
+
+def save_plan_state(state: dict, repo_root: Path | None = None) -> bool:
+    """Atomic write, same shape as write_plan_file. Failure is logged, not raised.
+
+    A state file that could not be saved means the next cycle sees the older
+    answer and writes a redundant plan. That is the correct direction and the
+    reason this returns a bool instead of throwing.
+    """
+    p = plan_state_path(repo_root)
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_suffix(p.suffix + ".tmp")
+        tmp.write_text(json.dumps(state, indent=2, sort_keys=True, default=str))
+        os.replace(tmp, p)
+        return True
+    except Exception as e:
+        logj(
+            {
+                "op": "plan_state",
+                "execute": "save_failed",
+                "error": type(e).__name__,
+                "path": str(p),
+                "sent": False,
+                "mutated": False,
+                "dry_run": True,
+            }
+        )
+        return False
+
+
+def plan_write_decision(
+    fingerprint: str | None,
+    state: dict,
+    rules: dict,
+    repo_root: Path | None = None,
+    now: datetime | None = None,
+    snapshot_minutes: float | None = None,
+) -> tuple[bool, str, bool]:
+    """(write?, reason, is_snapshot). Pure apart from one existence check.
+
+    Reads top to bottom as the invariant: every branch that is not "the same
+    decision as last time, recently enough" returns True.
+
+    `snapshot_minutes` is passed in by run_planning_pass, which has already
+    validated the rule and LOGGED any problem with it. Deriving it a second
+    time here would mean the value that gets logged and the value that gets
+    USED are computed by two separate calls — harmless while the fallback is a
+    constant, and exactly the seam through which a logged number and an applied
+    number drift apart the day it stops being one. Omitted, it falls back to
+    reading the rules, so the function is still usable on its own.
+    """
+    if snapshot_minutes is None:
+        snapshot_minutes, _ = plan_snapshot_minutes(rules)
+    if not fingerprint:
+        return True, "fingerprint_unavailable", False
+    last_fp = state.get("fingerprint")
+    if not last_fp:
+        return True, "no_last_plan", False
+    last_path = state.get("path")
+    if not last_path:
+        return True, "no_last_plan", False
+    # THE PLAN THE STATE POINTS AT MUST STILL BE ON DISK. The runbook tells the
+    # operator `rm config/plans/*.json` is fine; without this check that command
+    # buys six hours of no plans at all, with the state file cheerfully
+    # asserting one already exists. Resolved by NAME against the current
+    # plan_dir so a moved or copied repo does not read as a missing plan.
+    if not (plan_dir(repo_root) / Path(str(last_path)).name).exists():
+        return True, "last_plan_missing", False
+    if str(last_fp) != str(fingerprint):
+        return True, "changed", False
+
+    if snapshot_minutes <= 0:
+        return False, "unchanged", False
+    written_at = state.get("written_at")
+    try:
+        last_written = _parse_ticket_time(written_at)
+    except (ValueError, TypeError):
+        # An unparseable stamp cannot prove the planner is alive, so it does not
+        # get to suppress the proof.
+        return True, "snapshot_state_unparseable", True
+    # ELAPSED, never a constructed future timestamp — the same reasoning
+    # outbox_max_wait_days documents: a huge configured value must mean what a
+    # human reading it thinks it means, not overflow datetime and kill the lane.
+    elapsed_minutes = (now_et(now) - last_written).total_seconds() / 60.0
+    if elapsed_minutes >= snapshot_minutes:
+        return True, "snapshot_interval", True
+    return False, "unchanged", False
+
+
 def run_planning_pass(
     rules: dict,
     book: dict,
@@ -2314,12 +2765,23 @@ def run_planning_pass(
     now: datetime | None = None,
     rules_path: str = "",
 ) -> list:
-    """Build the plan, write it, print one legible line per symbol.
+    """Build the plan, decide whether it is NEW, write it if so, print per symbol.
 
     Returns the log lines so run_cycle can hand them back with the rest of the
     cycle. Every line carries `sent: False` and `mutated: False` LITERALLY —
     this lane cannot post, and a caller iterating the cycle's output must be
     able to assert that without a missing key reading as None.
+
+    THE WRITE DECISION LIVES HERE, NOT IN write_plan_file, on purpose.
+    `build_plan` and `write_plan_file` stay dumb and unconditional: the approve
+    CLI, and every test that drives them directly, get exactly the behaviour
+    they had before. This function is the only thing that knows about cadence,
+    which means the artifact rule can be changed in one place and cannot leak
+    into the path a human uses to approve a trade.
+
+    The per-symbol `op=plan` lines are emitted EVERY cycle regardless. Sol's
+    "separate evaluation cadence from artifact cadence", read literally: the
+    thinking is still logged at full rate; only the file is bounded.
     """
     plan = build_plan(rules, book, repo_root=repo_root, now=now, rules_path=rules_path)
     lines: list = []
@@ -2357,20 +2819,111 @@ def run_planning_pass(
                 "dry_run": True,
             }
         )
-    path = write_plan_file(plan, repo_root=repo_root, now=now)
-    lines.append(
-        {
-            "op": "plan_file",
-            "execute": "written" if path else "write_failed",
-            "path": str(path) if path else None,
-            "planned_at": plan["planned_at"],
-            "candidates": plan["candidates"],
-            "note": "approve with --approve-plan <file> <ticket id>",
-            "sent": False,
-            "mutated": False,
-            "dry_run": True,
-        }
+    # --- the artifact gate. See the block above write_plan_file. -----------
+    # Wrapped: a fingerprint that will not compute must not cost the cycle its
+    # plan. fp None routes to "write" through plan_write_decision.
+    try:
+        fp = plan_fingerprint(plan, rules)
+    except Exception as exc:
+        fp = None
+        logj(
+            {
+                "op": "plan_fingerprint",
+                "execute": "uncomputable",
+                "error": type(exc).__name__,
+                "sent": False,
+                "mutated": False,
+                "dry_run": True,
+            }
+        )
+    # ONE call, whose result is both logged and used. See plan_write_decision.
+    snap_minutes, problem = plan_snapshot_minutes(rules)
+    if problem:
+        logj(
+            {
+                "op": "plan_snapshot_rule",
+                "execute": "unusable_value",
+                "problem": problem,
+                "using_minutes": snap_minutes,
+                "sent": False,
+                "mutated": False,
+                "dry_run": True,
+            }
+        )
+    state = load_plan_state(repo_root)
+    should_write, why, snapshot = plan_write_decision(
+        fp, state, rules, repo_root=repo_root, now=now, snapshot_minutes=snap_minutes
     )
+    # The LOG carries a 12-hex prefix; the plan file and the state file carry
+    # the whole hash. A full sha256 on every cycle's log line is noise an
+    # operator has to scroll past, and the prefix is enough to see two cycles
+    # agree. Anything comparing fingerprints for real reads the files.
+    fp_short = fp[:12] if fp else None
+
+    if should_write:
+        plan["fingerprint"] = fp
+        plan["snapshot"] = bool(snapshot)
+        path = write_plan_file(plan, repo_root=repo_root, now=now)
+        if path is not None:
+            # STATE IS SAVED ONLY AFTER A PROVEN WRITE. Stamping it on a failed
+            # write would make the next six hours of cycles agree that a plan
+            # exists which does not — a fail-open in the one direction this
+            # whole block is built to refuse.
+            save_plan_state(
+                {
+                    "fingerprint": fp,
+                    "path": str(path),
+                    "written_at": now_et(now).isoformat(),
+                    "cycles_since_write": 0,
+                },
+                repo_root,
+            )
+        lines.append(
+            {
+                "op": "plan_file",
+                "execute": "written" if path else "write_failed",
+                "reason": why,
+                "snapshot": bool(snapshot),
+                "fingerprint": fp_short,
+                "path": str(path) if path else None,
+                "planned_at": plan["planned_at"],
+                "candidates": plan["candidates"],
+                "note": "approve with --approve-plan <file> <ticket id>",
+                "sent": False,
+                "mutated": False,
+                "dry_run": True,
+            }
+        )
+    else:
+        try:
+            cycles = int(state.get("cycles_since_write") or 0) + 1
+        except (TypeError, ValueError):
+            cycles = 1
+        # written_at is PRESERVED, not refreshed. Refresh it here and the
+        # snapshot interval restarts every cycle and never fires — a liveness
+        # feature that is silent forever, which is worse than not having one.
+        carried = dict(state)
+        carried["cycles_since_write"] = cycles
+        save_plan_state(carried, repo_root)
+        lines.append(
+            {
+                "op": "plan_file",
+                "execute": "unchanged",
+                "reason": "fingerprint_unchanged",
+                "snapshot": False,
+                "fingerprint": fp_short,
+                "cycles_since_write": cycles,
+                # the plan that still STANDS, so an operator told "nothing new"
+                # is never left without the address of the current answer.
+                "path": state.get("path"),
+                "planned_at": plan["planned_at"],
+                "candidates": plan["candidates"],
+                "note": "unchanged decision; standing plan still current",
+                "sent": False,
+                "mutated": False,
+                "dry_run": True,
+            }
+        )
     for line in lines:
         logj(line)
     return lines
