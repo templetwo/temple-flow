@@ -11,7 +11,9 @@
     "risk_pct": 0.025,
     "day_breaker_pct": 0.045,
     "peak_dd_pct": 0.18,
-    "max_opens": 4
+    "max_opens": 4,
+    "max_ticket_notional_pct": 0.35,
+    "_comment_max_ticket_notional": "Hard per-ticket NOTIONAL ceiling for the outbox lane: qty*limit <= 0.35 * live equity (~$208.90 on $596.86). This is NOT risk_pct: risk_pct caps |limit-stop|*qty (~$14.92), which 14 ETHA passes while costing $261.80 of buying power. Both caps bind. Add 'max_ticket_notional' as an absolute dollar figure to tighten further; the tighter of the two wins."
   },
   "protect": {
     "NVO": {
