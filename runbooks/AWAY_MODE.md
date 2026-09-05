@@ -341,11 +341,12 @@ Example ticket (live-universe symbol, inside the caps):
 > daily price history, per HQ's default data source.
 
 **THE PLANNER NEVER PLACES AN ORDER.** It reads quotes and daily history, it
-computes a small feature set, it writes one JSON file to `config/plans/`, and it
-prints. It has no broker POST, no cancel, and it never writes into
-`config/outbox/`. The only path from a plan to the outbox is a human running
-`--approve-plan`. Read that sentence twice before changing anything in this
-lane.
+computes a small feature set, it prints, and it writes a JSON file to
+`config/plans/` **when the decision has changed** (see *Artifact cadence* below
+— it evaluates every cycle and writes on semantic change, not once per tick). It
+has no broker POST, no cancel, and it never writes into `config/outbox/`. The
+only path from a plan to the outbox is a human running `--approve-plan`. Read
+that sentence twice before changing anything in this lane.
 
 ### The loop
 
@@ -514,6 +515,40 @@ four saying `risk_box_blocked: max_opens 4 >= 4` with ETHA last 18.52 and IBIT
 45.11. About **64 files a weeknight and 96 a weekend day**, none of them
 actionable and all of them needing to be opened to find that out.
 
+**HOW MUCH THIS ACTUALLY SAVES — the frozen-quote case is measured, the other
+one is not, and the two are not interchangeable.** The 2026-09-05 review
+measured the frozen-quote regime (its report: the live plan files that day all
+carried the same `last` to four decimals): a 69-cycle Thu-16:00 → Fri-09:00
+stretch against a blocked box produces **3 files — 1 change plus 2 snapshots —
+against 69 before**. That is the "~4 files a day" claim and it holds.
+
+With quotes **live during extended hours** (16:00–20:00 and 04:00–09:00; `last`
+is Schwab's `lastPrice`, which updates then) the rate is **higher, and it has
+never been observed** — the daemon log holds only frozen-quote cycles, so every
+figure for that regime is a model. **No modelled number is published in this
+runbook**, and no modelled figure for it exists on disk anywhere in this repo —
+if you produce one, label it modelled and say what it assumes. Two things about
+that regime are structural rather
+than modelled, and both push the count up: the 5-cent grid is 0.27% of ETHA at
+18.52 but only **0.11% of IBIT at 45.11**, so **IBIT sets the rate**; and on the
+candidate path five separately-offset grids ride the same price (see below), so
+a cent can write a file. **Do not quote the weekend figure as the weeknight
+one.**
+
+**An open design fork, Anthony's to call, deliberately not taken here.**
+`_fingerprint_features` is applied to **every** symbol, including ones where
+`build_plan` short-circuited at the risk box before the price was ever
+consulted. On that path the decision is a constant and `last` is the only
+volatile term, so price noise writes files that provably cannot carry a new
+decision. The review's counterfactual — null `features` **only** for symbols
+whose reason is `risk_box_blocked` — took all four of its modelled cases back to
+3 files, which would be a large weeknight saving if the model holds. Not taken,
+for two reasons: it is a real narrowing of what the fingerprint watches, and
+`test_sub_grid_price_noise_is_not_change_and_a_grid_step_is` uses the blocked
+box as its clean substrate and asserts a nickel crossing **does** write, so that
+test encodes the current choice and would have to change with it. Shipped
+behaviour errs toward more artifacts, which is the safe direction.
+
 **The rule.** Every off-hours cycle still builds the whole plan and still prints
 one `op=plan` line per symbol. Before writing, the wire takes a **fingerprint**
 of the decision-relevant state and compares it to the last one:
@@ -549,6 +584,31 @@ sub-nickel move cannot flip a decision this planner makes. The risk box's reason
 `day_breaker: day_pnl=-12.3456 …` carries four decimals of live P&L and would
 re-create the pileup by itself.
 
+**What quantization can mask, in numbers rather than by implication.** An
+unchanged fingerprint guarantees each quantized field is within **one bucket**
+of a fresh computation, and the comparison is always against the **last written
+plan** rather than the previous cycle, so there is no ratcheting drift. On the
+candidate path that bounds the standing ticket's `limit` and `stop` at up to
+**4.9c** off a fresh computation — 0.26% of an 18.50 order price, and up to 9.4%
+of a ~52c (2 x ATR) stop distance — and the `max_last` / `min_last` drift-band
+edges can each sit up to 4.9c off on a ±18.5c band (26% of the half-band on
+ETHA, 11% on IBIT). Directionally mixed, not systematically unsafe, and the
+execution-time gate re-checks the live price against the band the file **states**
+rather than against a recomputed one.
+
+**THE CANDIDATE PATH IS FINER THAN A NICKEL, and this is not obvious from the
+grid constant.** Five terms ride the same 5-cent grid at **different offsets** —
+`features.last`, `ticket.limit`, `ticket.stop` (= last − 2·ATR),
+`validity.max_last` (= floor_to_tick(last·1.01)) and `validity.min_last` — and
+**any one of the five** crossing writes the file. Measured on the test fixture:
+18.50 → 18.51 is unchanged, but 18.50 → **18.52 writes** while `last` never
+leaves its own bucket, because the stop crossed 17.98 → 18.00 and the upper
+drift edge 18.68 → 18.70. That is the conservative direction (more artifacts,
+never fewer) and the numbers on the ticket really did change — but "a sub-nickel
+move changes nothing" is a statement about **decisions**, not about **artifacts
+on the candidate path**. Pinned by
+`test_a_grid_step_on_a_candidate_cycle_rewrites_limit_stop_and_validity`.
+
 **The liveness snapshot.** So an unchanged decision never looks like a wedged
 daemon, an artifact is written anyway once the interval has elapsed, marked
 `"snapshot": true` in the file and on the log line
@@ -556,8 +616,19 @@ daemon, an artifact is written anyway once the interval has elapsed, marked
 
 | rule | default | meaning |
 | --- | --- | --- |
-| `outbox.plan_snapshot_minutes` | **360** (6 hours) | write an unchanged plan at least this often. Covers a 16:00→09:00 stretch with a couple of proofs of life, at ~4 files a day against the ~96 measured. |
-| `outbox.plan_snapshot_minutes: 0` | — | **disables snapshots entirely.** An unchanged decision then produces no artifact however long it stands. |
+| `outbox.plan_snapshot_minutes` | **360** (6 hours) | write an unchanged plan at least this often. Covers a 16:00→09:00 stretch with a couple of proofs of life. Maximum standing age of a plan = 360 + one cycle = **6h15m**, comfortably inside the 24h approval window. |
+| `outbox.plan_snapshot_minutes: 0` | — | **disables snapshots entirely.** An unchanged decision then produces no artifact however long it stands. **See the warning below before setting this.** |
+
+> **⚠ `0` — AND ANYTHING AT OR PAST 1440 — CAN QUIETLY CLOSE THE APPROVAL DOOR.**
+> `--approve-plan` refuses `plan_too_old_regenerate` past `MAX_PLAN_AGE_HOURS`
+> (24h). A standing plan carrying a live candidate on a fingerprint that does
+> not move — frozen weekend quotes are the realistic case — then ages out and
+> becomes **unapprovable**, and with snapshots off no replacement is ever
+> written, because the fingerprint never changes. This is the same shape as the
+> `max_data_age_minutes x 24` coupling narrated further down (*"Two unrelated
+> clocks, coupled backwards"*), reachable through a third knob. It is **not
+> clamped in code on purpose** — silently overriding a number Anthony typed is
+> the fail-quiet direction. The shipped default is safe by a wide margin.
 
 An unusable value (a bool, a string, a negative) falls back to **360** with
 `op=plan_snapshot_rule execute="unusable_value"` in the log — never to "no
@@ -570,6 +641,31 @@ of the last written plan, `written_at`, and `cycles_since_write`. It is
 git-ignored, and it is **dotted on purpose** so `rm config/plans/*.json` — which
 this runbook recommends — cannot delete it by accident from a shell. Deleting it
 anyway is safe: the next cycle treats it as "no last plan" and writes.
+
+> **IT IS ALSO THE AWAY-MODE LIVENESS CHECK, and it is the one you want.**
+> `save_plan_state` rewrites this file **every cycle**, unchanged ones included,
+> so its mtime is a **15-minute-resolution** proof that the planner ran. Between
+> snapshots, `ls config/plans/` is up to **6h15m** blind — an operator who
+> checks only the plan directory traded a 15-minute signal for a six-hour one
+> without being told. Check the state file:
+>
+> ```bash
+> ls -l  config/plans/.last_plan.json          # mtime = the last cycle that ran
+> cat    config/plans/.last_plan.json          # cycles_since_write counts up
+> ```
+>
+> `cycles_since_write` climbing by 1 every 15 minutes is a healthy quiet
+> planner. A frozen mtime is a wedged one, and no number of missing plan files
+> tells you which of the two you have.
+
+**A standing plan's `equity` goes stale, by design.** `equity` is not a
+fingerprint term — it stops being a decision input the moment `sizing.qty` is
+fixed, so a move from 596.86 to 610.00 leaves qty at 11 and correctly writes
+nothing. The file on disk therefore keeps reporting the equity it was **built
+on**, for up to a snapshot interval, and `equity` reads as current. The same
+holds for every other reported-but-unwatched number (`risk_dollars`,
+`notional`, `dist_to_sma20_pct`). The plan file is the document the approval is
+given ON: read `planned_at` before reading `equity`.
 
 **THE INVARIANT, and it is the whole safety story: the gate's only job is to
 suppress duplicates, and every uncertainty resolves to WRITING.** No state file,
@@ -588,12 +684,38 @@ proposes a live candidate — that last one because a ticket `id` embeds the
 cycle's own HHMM, and fingerprinting it naively would leave the feature inert on
 exactly the cycles worth reading.
 
+**AND EVERY WATCHED TERM IS PROVEN ONE AT A TIME, because the acceptance tests
+above do not do it.** A 2026-09-05 review measured the gap by mutating
+`plan_fingerprint_payload` in-process: nulling the candidate `ticket` for every
+symbol left the whole suite **green**, and so did nulling `sizing_qty` +
+`sizing_reason` — that is, every copy of the share count a human approves and
+the daemon posts was watched by nothing that could say so. Standing experimental
+law #2: *a gate must be shown to be able to FAIL*. So
+`test_every_fingerprint_term_is_individually_falsifiable` replaces **one dotted
+leaf** of a real built plan at a time and requires the fingerprint to move (43
+terms, plus the risk-box clause names and the rules hash; `subTest` names each).
+Its twin
+`test_the_fingerprint_ignores_the_clock_the_prose_and_the_arithmetic` requires
+33 clock / prose / derived-arithmetic rows to leave it **identical** — including
+three fields that do not exist yet, which is the allowlist's whole claim — and
+`test_the_ticket_terms_reach_the_fingerprint_only_through_fingerprint_ticket`
+re-runs the reviewer's own mutation as a permanent test, so the table above
+cannot quietly stop being load-bearing. Re-measured after: nulling `ticket`
+takes **15** tests red, `sizing` **3**, both **18**, `features` **14**,
+`coverage` **3**, `checks`+`failed_checks` **2**, `risk_box` **2**,
+`strategy_params` **1**. All were 0 before.
+
 ```bash
 # what an unchanged night looks like in the daemon log (path from the plist,
 # deploy/com.templetwo.temple-flow-wire.plist -> StandardOutPath)
 grep '"op":"plan_file"' ~/Library/Logs/temple-flow-wire.log | tail -5
-# {"op":"plan_file","execute":"unchanged","reason":"fingerprint_unchanged",
+# {"op":"plan_file","execute":"unchanged","reason":"unchanged",
 #  "fingerprint":"8c6945e13fc7","cycles_since_write":7,"path":".../2026-09-05_2000.json", ...}
+#
+# `reason` is always one of plan_write_decision's own words — changed,
+# unchanged, no_last_plan, last_plan_missing, snapshot_interval,
+# fingerprint_unavailable, snapshot_state_unparseable. One vocabulary; the
+# write side and the unchanged side do not use different dialects.
 ```
 
 ### Housekeeping, stated rather than discovered
@@ -741,10 +863,11 @@ fetched for it.
 - Process outbox tickets under the guards above. A ticket refused for a timing
   or transient-state reason **stays in `config/outbox/`** and is re-gated every
   900s until it posts, dies on a terminal gate, or hits a bound you set.
-- **Outside RTH only:** run the read-only planning pass over ETHA / IBIT and
-  write `config/plans/<date>_<time>.json`. It proposes; it never places, and it
-  never writes to `config/outbox/`. Approving is Anthony's, by hand, with
-  `--approve-plan`.
+- **Outside RTH only:** run the read-only planning pass over ETHA / IBIT every
+  cycle, and write `config/plans/<date>_<time>.json` **when the decision has
+  changed** (plus a liveness snapshot every `plan_snapshot_minutes`; see
+  *Artifact cadence*). It proposes; it never places, and it never writes to
+  `config/outbox/`. Approving is Anthony's, by hand, with `--approve-plan`.
 - Re-evaluate any approved ticket carrying `validity` against fresh quotes and a
   fresh daily history at the moment of execution. Stale data waits; a broken
   idea dies.

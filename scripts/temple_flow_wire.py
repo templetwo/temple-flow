@@ -2420,6 +2420,19 @@ def _risk_box_clauses(reasons: Any) -> list:
     live P&L inside a fingerprint is a detector that fires on every tick — the
     pileup, rebuilt. WHICH clauses hold is the decision; the numbers behind them
     are a measurement, and they stay in the plan file where a human reads them.
+
+    THE SPLIT IS BLOCKLIST-SHAPED AND THAT IS THE ONE WEAKNESS IN THIS BLOCK.
+    It assumes every reason `risk_box` builds carries "name: numbers". All
+    three do today (risk_box at the day_breaker / peak_dd / max_opens appends).
+    A fourth reason appended WITHOUT a colon puts its formatted live numbers
+    straight into the fingerprint, and the symptom is the feature silently
+    reverting to one file per cycle while still looking installed — exactly the
+    fail-open the allowlist next door exists to refuse. The invariant is
+    therefore asserted where the reasons are BUILT, not assumed here:
+    test_temple_flow_wire.py::TestPlanArtifactCadence::
+    test_every_risk_box_reason_yields_a_clause_name_with_no_numbers trips all
+    three clauses for real and requires the extracted names to contain no
+    digits. Add a reason without a colon and that test goes red.
     """
     out = []
     for r in reasons or []:
@@ -2602,6 +2615,20 @@ def plan_snapshot_minutes(rules: dict) -> tuple[float, str | None]:
     this feature exists to end. Any unusable value falls back to the default
     with the problem reported — never to "no snapshots", because the failure of
     a liveness feature must not be silence.
+
+    THIS KNOB IS COUPLED TO MAX_PLAN_AGE_HOURS AND THE COUPLING IS NOT
+    ENFORCED. cmd_approve_plan refuses `plan_too_old_regenerate` past 24h, so a
+    standing plan carrying a live candidate on a fingerprint that does not move
+    — frozen weekend quotes are the realistic case — becomes UNAPPROVABLE once
+    it ages out, and with snapshots disabled no replacement is ever written.
+    The shipped default is safe by a wide margin (360 + one cycle = a maximum
+    standing age of 6h15m against a 24h door). Set 0, or anything at or past
+    1440, and the approval door can close on a plan the planner still believes.
+    This is the same shape the runbook narrates about `max_data_age_minutes x
+    24` — two unrelated clocks, coupled backwards — reachable through a third
+    knob. NOT clamped here on purpose: silently overriding a number Anthony
+    typed is the fail-quiet direction, and the honest fix is that he reads this
+    and the runbook table before disabling snapshots.
     """
     o = rules.get("outbox")
     if not isinstance(o, dict) or "plan_snapshot_minutes" not in o:
@@ -2782,6 +2809,18 @@ def run_planning_pass(
     The per-symbol `op=plan` lines are emitted EVERY cycle regardless. Sol's
     "separate evaluation cadence from artifact cadence", read literally: the
     thinking is still logged at full rate; only the file is bounded.
+
+    CONCURRENCY, NAMED RATHER THAN DISCOVERED. This lane now keeps state, and
+    load_plan_state → decide → save_plan_state is not atomic across processes:
+    a hand-run `--once` overlapping the 900s daemon can have the loser's
+    unchanged-branch save_plan_state write a stale `fingerprint`/`written_at`
+    over the winner's fresh one. Every ordering costs at most ONE redundant
+    plan file — the loser's stale state makes the next cycle disagree with the
+    plan on disk and write, which is the invariant's own direction — and
+    os.replace means neither file is ever read half-written. No lock is taken
+    because the failure is bounded and the cure would be the first lock in this
+    script; but the state file is the lane's only memory, so the race belongs
+    in writing.
     """
     plan = build_plan(rules, book, repo_root=repo_root, now=now, rules_path=rules_path)
     lines: list = []
@@ -2909,7 +2948,14 @@ def run_planning_pass(
             {
                 "op": "plan_file",
                 "execute": "unchanged",
-                "reason": "fingerprint_unchanged",
+                # `why`, NOT a literal. plan_write_decision owns the vocabulary
+                # of this lane (changed / no_last_plan / last_plan_missing /
+                # snapshot_interval / fingerprint_unavailable /
+                # snapshot_state_unparseable / unchanged); hardcoding a string
+                # here that the decision function never emits forks it in two,
+                # and an operator grepping the log for a reason the code can
+                # produce would find a word from neither side.
+                "reason": why,
                 "snapshot": False,
                 "fingerprint": fp_short,
                 "cycles_since_write": cycles,

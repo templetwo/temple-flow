@@ -2958,6 +2958,15 @@ class TestPlanArtifactCadence(unittest.TestCase):
             self.assertEqual(first["execute"], "written")
             self.assertEqual(second["execute"], "unchanged")
             self.assertEqual(third["execute"], "unchanged")
+            # ONE VOCABULARY. `reason` is plan_write_decision's own word,
+            # passed through rather than re-invented at the log line: the
+            # write side emits changed / no_last_plan / last_plan_missing /
+            # snapshot_interval / fingerprint_unavailable /
+            # snapshot_state_unparseable, and the unchanged side must emit the
+            # word that function actually returns for this branch.
+            self.assertEqual(first["reason"], "no_last_plan")
+            self.assertEqual(second["reason"], "unchanged")
+            self.assertEqual(third["reason"], "unchanged")
             # the unchanged line points at the plan that still stands, so an
             # operator reading the log is never told "nothing" without being
             # told where the standing answer lives.
@@ -3322,6 +3331,625 @@ class TestPlanArtifactCadence(unittest.TestCase):
             line = self.plan_file_lines(out)[0]
             self.assertEqual(line["execute"], "written")
             self.assertEqual(line["reason"], "last_plan_missing")
+
+    # --- 7. the terms that carry the money, proven ONE AT A TIME ----------
+    #
+    # THE PROOF GAP THIS SECTION CLOSES, measured by the 2026-09-05 reviewer by
+    # mutating plan_fingerprint_payload in-process against the whole suite:
+    # nulling `ticket` for every symbol left 172/172 GREEN. So did nulling
+    # `sizing_qty` + `sizing_reason`. So did nulling BOTH — that is, every copy
+    # of the share count a human approves and the daemon posts. Only `features`
+    # and `rules_sha256` had any sensitivity at all. A regression that stopped
+    # watching qty / limit / stop / validity would have shipped green.
+    #
+    # THE IMPLEMENTATION WAS NEVER WRONG. The reviewer verified the live
+    # behaviour by hand (equity 596.86 -> 1400.00 moves ETHA qty 11 -> 26 and
+    # writes; -> 610.00 leaves qty at 11 and stays silent) and this file
+    # reproduces both halves below. The defect was in the EVIDENCE: standing
+    # experimental law #2 says a gate must be shown to be able to FAIL, and a
+    # term no test can make fail is not proven.
+
+    def candidate_book(self, **kw) -> dict:
+        """Box OPEN, ETHA a real candidate. Two opens against max_opens 4.
+
+        The mirror of blocked_book: every test in section 7 needs a plan that
+        actually carries a ticket, because a ticket is the thing being proven
+        and the blocked path has none.
+        """
+        book = base_book(
+            in_rth=False,
+            armed=False,
+            quotes_as_of="2026-09-05T20:00:00-04:00",
+        )
+        book.update(kw)
+        return book
+
+    def build_candidate_plan(self, book=None, rules=None) -> dict:
+        """build_plan directly — no file, no state, no cadence.
+
+        Section 7's mutation tables are about what the FINGERPRINT watches, so
+        they drive plan_fingerprint against plan dicts rather than counting
+        artifacts. The end-to-end cadence claims are the two tests above them.
+        """
+        fake = history_source(default=synth_history(end=18.30, step=0.038))
+        with tempfile.TemporaryDirectory() as tmpdir, no_network(), patched(
+            "fetch_daily_history", fake
+        ):
+            return temple_flow_wire.build_plan(
+                rules if rules is not None else example_rules(),
+                self.candidate_book() if book is None else book,
+                repo_root=Path(tmpdir),
+                now=self.at(20, 0),
+            )
+
+    def build_blocked_plan(self) -> dict:
+        with tempfile.TemporaryDirectory() as tmpdir, no_network(), patched(
+            "fetch_daily_history", never_called_history
+        ):
+            return temple_flow_wire.build_plan(
+                example_rules(),
+                self.blocked_book(),
+                repo_root=Path(tmpdir),
+                now=self.at(20, 0),
+            )
+
+    @staticmethod
+    def mutate(plan: dict, path: str, value) -> dict:
+        """A copy of `plan` with exactly one dotted leaf replaced.
+
+        Raises KeyError on a path that does not exist rather than creating it,
+        EXCEPT for the last segment — adding a leaf is a legitimate mutation
+        (it is how "a field someone adds tomorrow" gets tested) and a typo in
+        an intermediate segment must never pass as a silent no-op mutation that
+        then "proves" insensitivity.
+        """
+        out = deepcopy(plan)
+        node = out
+        keys = path.split(".")
+        for k in keys[:-1]:
+            node = node[k]
+        node[keys[-1]] = value
+        return out
+
+    def test_a_changed_equity_moves_qty_and_writes_with_prices_held_constant(self):
+        """FAILS ON 214c0de: assertEqual(len(files), 2) gets 3.
+
+        THE MONEY-PATH HALF OF THE CANDIDATE CASE, and the reason it was
+        missed: test_an_unchanged_CANDIDATE_cycle_writes_one_plan hands the
+        SAME book object to both cycles, so `last` is 18.50 on both and equity
+        is identical — nothing on the candidate path ever moves there. That
+        test proves the ticket's CLOCK fields (id, planned_at, source_plan) are
+        EXCLUDED. It cannot prove the ticket's DECISION fields are INCLUDED.
+        This test is the other half.
+
+        EQUITY IS THE ISOLATING INPUT, chosen for one property: it is not
+        itself a fingerprint term. plan["equity"] is deliberately absent from
+        the payload, it moves no price, and it reaches the fingerprint through
+        exactly one door — the share count a human approves and the daemon
+        posts. So the two written files are asserted to carry BYTE-IDENTICAL
+        `features` for ETHA while sizing.qty and ticket.qty differ. That is the
+        isolation discipline test_a_changed_rules_file_writes_a_new_plan uses,
+        one field narrower.
+
+        THE MIDDLE CYCLE IS NOT DECORATION. +2.2% of equity leaves qty at 11,
+        and an unchanged share count must stay silent; a fingerprint that
+        watched raw equity would write there and the count would be 3. Both
+        numbers are the reviewer's own live measurement, reproduced.
+        """
+        base = self.candidate_book()
+        with tempfile.TemporaryDirectory() as tmpdir, no_network(), patched(
+            "fetch_daily_history",
+            history_source(default=synth_history(end=18.30, step=0.038)),
+        ):
+            root = Path(tmpdir)
+            self.cycle(root, base, self.at(20, 0))
+            files = plans_in(root)
+            self.assertEqual(len(files), 1, files)
+            first = json.loads(files[0].read_text())
+            # the fixture really did propose something, or this proves nothing
+            self.assertEqual(first["symbols"]["ETHA"]["decision"], "candidate")
+            self.assertEqual(first["symbols"]["ETHA"]["ticket"]["qty"], 11)
+            self.assertEqual(first["symbols"]["ETHA"]["sizing"]["qty"], 11)
+
+            # +2.2% of equity. qty is still 11, so this is NOT a new decision.
+            nudged = self.candidate_book(equity=610.00)
+            out_quiet = self.cycle(root, nudged, self.at(20, 15))
+            self.assertEqual(len(plans_in(root)), 1, plans_in(root))
+            self.assertEqual(self.plan_file_lines(out_quiet)[0]["execute"], "unchanged")
+
+            # +135% of equity. qty moves 11 -> 26 and the plan MUST be rewritten:
+            # the standing file would otherwise offer a human a share count the
+            # sizing law no longer produces.
+            richer = self.candidate_book(equity=1400.00)
+            out_rich = self.cycle(root, richer, self.at(20, 30))
+            files = plans_in(root)
+            self.assertEqual(len(files), 2, files)
+            self.assertEqual(self.plan_file_lines(out_rich)[0]["execute"], "written")
+            self.assertEqual(self.plan_file_lines(out_rich)[0]["reason"], "changed")
+
+            after = json.loads(files[1].read_text())
+            etha_before = first["symbols"]["ETHA"]
+            etha_after = after["symbols"]["ETHA"]
+            # PRICES PROVABLY HELD: the only thing that can have moved the
+            # fingerprint is the share count.
+            self.assertEqual(etha_before["features"], etha_after["features"])
+            self.assertEqual(
+                etha_before["ticket"]["limit"], etha_after["ticket"]["limit"]
+            )
+            self.assertEqual(etha_before["ticket"]["stop"], etha_after["ticket"]["stop"])
+            self.assertEqual(
+                etha_before["ticket"]["validity"]["max_last"],
+                etha_after["ticket"]["validity"]["max_last"],
+            )
+            self.assertEqual(etha_after["ticket"]["qty"], 26)
+            self.assertEqual(etha_after["sizing"]["qty"], 26)
+            self.assertNotEqual(first["fingerprint"], after["fingerprint"])
+            self.assertIs(after["snapshot"], False)
+
+    def test_a_grid_step_on_a_candidate_cycle_rewrites_limit_stop_and_validity(self):
+        """FAILS ON 214c0de: assertEqual(len(files), 3) gets 4.
+
+        test_sub_grid_price_noise_is_not_change_and_a_grid_step_is measures the
+        grid on the BLOCKED path, where `last` is the only thing that can move
+        and no ticket exists. This is the same grid on the CANDIDATE path,
+        where a price move re-prices every term a human approves at once:
+        limit, stop, and both drift-band edges, asserted different between the
+        files. A standing plan that kept the 18.50 numbers after the market
+        moved is a stale order ticket in front of the money door.
+
+        THE CANDIDATE PATH IS FINER THAN A NICKEL, AND IT SURPRISED THE FIRST
+        DRAFT OF THIS TEST. Five terms are quantized on the SAME 5-cent grid
+        with DIFFERENT offsets — features.last, ticket.limit, ticket.stop
+        (= last - 2*ATR), validity.max_last (= floor_to_tick(last*1.01)) and
+        validity.min_last (= ceil_to_tick(last*0.99)) — and ANY of the five
+        crossing writes the file. Measured on this fixture:
+
+            last   last  limit   stop   max_last  min_last   fingerprint
+            18.50   370    370    359      373       366     A
+            18.51   370    370    359      373       366     A   <- unchanged
+            18.52   370    370    360      374       366     B   <- WRITES
+            18.55   371    371    360      374       367     C
+            18.57   371    371    361      375       367     D
+
+        So 18.50 -> 18.52 writes a plan while `last` never leaves its own
+        bucket: the STOP crossed 17.98 -> 18.00 and the upper drift edge
+        18.68 -> 18.70. That is the conservative direction (more artifacts,
+        never fewer) and it is correct — the numbers on the ticket really did
+        change — but it means the runbook's "a sub-nickel move cannot flip a
+        decision" is a statement about DECISIONS and not about artifacts on the
+        candidate path. Pinned here rather than left to be rediscovered.
+
+        WHAT THIS TEST DOES NOT PROVE, stated because the reviewer's finding
+        was exactly this kind of half-credit: `features.last` moves in the
+        18.57 phase too, so that phase's fingerprint would still change if the
+        ticket were watched by nothing at all. The per-term proof that limit /
+        stop / validity are individually watched is
+        test_every_fingerprint_term_is_individually_falsifiable, and the proof
+        that THAT test can go red is the _fingerprint_ticket stub test after it.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir, no_network(), patched(
+            "fetch_daily_history",
+            history_source(default=synth_history(end=18.30, step=0.038)),
+        ):
+            root = Path(tmpdir)
+
+            def at_last(etha):
+                b = self.candidate_book()
+                b["quotes"] = dict(b["quotes"])
+                b["quotes"]["ETHA"] = {"last": etha}
+                return b
+
+            self.cycle(root, at_last(18.50), self.at(20, 0))
+            self.assertEqual(len(plans_in(root)), 1, plans_in(root))
+
+            # TRUE sub-grid on the candidate path: all five terms hold their
+            # buckets, so the ticket a human would approve is the same ticket.
+            out_sub = self.cycle(root, at_last(18.51), self.at(20, 15))
+            self.assertEqual(len(plans_in(root)), 1, plans_in(root))
+            self.assertEqual(self.plan_file_lines(out_sub)[0]["execute"], "unchanged")
+
+            # one cent further and the STOP crosses, while `last` does not.
+            out_stop = self.cycle(root, at_last(18.52), self.at(20, 30))
+            files = plans_in(root)
+            self.assertEqual(len(files), 2, files)
+            self.assertEqual(self.plan_file_lines(out_stop)[0]["execute"], "written")
+            self.assertEqual(
+                temple_flow_wire._q_price(18.50), temple_flow_wire._q_price(18.52)
+            )
+            self.assertNotEqual(
+                temple_flow_wire._q_price(17.98), temple_flow_wire._q_price(18.00)
+            )
+
+            # and a move that crosses on every term at once
+            out_step = self.cycle(root, at_last(18.57), self.at(20, 45))
+            files = plans_in(root)
+            self.assertEqual(len(files), 3, files)
+            self.assertEqual(self.plan_file_lines(out_step)[0]["execute"], "written")
+            self.assertEqual(self.plan_file_lines(out_step)[0]["reason"], "changed")
+
+            before = json.loads(files[0].read_text())["symbols"]["ETHA"]["ticket"]
+            after = json.loads(files[2].read_text())["symbols"]["ETHA"]["ticket"]
+            self.assertEqual(before["limit"], 18.50)
+            self.assertEqual(after["limit"], 18.57)
+            self.assertEqual(before["stop"], 17.98)
+            self.assertEqual(after["stop"], 18.05)
+            self.assertEqual(before["validity"]["max_last"], 18.68)
+            self.assertEqual(after["validity"]["max_last"], 18.75)
+            self.assertEqual(before["validity"]["min_last"], 18.32)
+            self.assertEqual(after["validity"]["min_last"], 18.39)
+            # every one of the four moved; none is equal to its predecessor
+            for key in ("limit", "stop"):
+                self.assertNotEqual(before[key], after[key])
+            for key in ("max_last", "min_last"):
+                self.assertNotEqual(before["validity"][key], after["validity"][key])
+            # the ticket id, however, is the one thing that must NOT be what
+            # made the file new — the clock fields are excluded by design.
+            self.assertNotEqual(before["id"], after["id"])
+
+    #: (dotted path, replacement) pairs that MUST move the fingerprint, against
+    #: the candidate plan. Every price leaf moves a FULL grid step or more —
+    #: 18.50 -> 18.60 is bucket 370 -> 372, while 18.50 -> 18.51 is the same
+    #: bucket and would go red for the wrong reason. Slopes move >= 0.001, ATR
+    #: >= 0.01, ret5d >= 0.0001, and the bool passthroughs flip.
+    FINGERPRINT_MUST_WATCH = [
+        # the approvable ticket. THESE ARE THE TERMS THE REVIEWER FOUND
+        # UNPROVEN: every one was invisible to the suite before this table.
+        ("symbols.ETHA.ticket.qty", 12),
+        ("symbols.ETHA.ticket.limit", 18.60),
+        ("symbols.ETHA.ticket.stop", 18.08),
+        ("symbols.ETHA.ticket.validity.max_last", 18.78),
+        ("symbols.ETHA.ticket.validity.min_last", 18.42),
+        ("symbols.ETHA.ticket.validity.max_data_age_minutes", 45.0),
+        ("symbols.ETHA.ticket.validity.min_sma20_over_sma50", False),
+        # the two fields that keep a proposed ticket INERT until a human moves
+        # them. A plan whose ticket silently became approved/stamped is the one
+        # change no operator may be told is "unchanged".
+        ("symbols.ETHA.ticket.status", "approved"),
+        ("symbols.ETHA.ticket.risk_stamped", True),
+        ("symbols.ETHA.ticket.action", "place_market"),
+        ("symbols.ETHA.ticket.side", "SELL"),
+        ("symbols.ETHA.ticket.stop_side", "BUY"),
+        ("symbols.ETHA.ticket.symbol", "IBIT"),
+        # the second copy of the share count, and the refusal that replaces it
+        ("symbols.ETHA.sizing.qty", 12),
+        ("symbols.ETHA.sizing.reason", "qty_clipped_to_zero"),
+        # the decision itself
+        ("symbols.ETHA.decision", "none"),
+        ("symbols.ETHA.reason", "strategy_declined"),
+        ("symbols.IBIT.checks.trend_stack_fast_over_slow", False),
+        (
+            "symbols.IBIT.failed_checks",
+            ["cap_known", "inside_extension_band", "last_at_or_under_cap", "atr_known"],
+        ),
+        ("symbols.IBIT.bars_needed", 60),
+        ("symbols.IBIT.history_note", "a different note"),
+        # the market, on the grid
+        ("symbols.ETHA.features.last", 18.60),
+        ("symbols.ETHA.features.cap", 19.00),
+        ("symbols.ETHA.features.sma20", 18.039),
+        ("symbols.ETHA.features.sma50", 17.469),
+        ("symbols.ETHA.features.sma20_slope", 0.039),
+        ("symbols.ETHA.features.sma50_slope", 0.039),
+        ("symbols.ETHA.features.atr14", 0.27),
+        ("symbols.ETHA.features.ret5d", 0.0107),
+        ("symbols.ETHA.features.bars", 119),
+        ("symbols.ETHA.features.position_qty", 1.0),
+        ("symbols.ETHA.features.has_working_entry", True),
+        ("symbols.ETHA.features.history_ok", False),
+        ("symbols.ETHA.features.quotes_ok", False),
+        # the box, the coverage, the law
+        ("risk_box.ok", False),
+        ("risk_box.opens", 3),
+        ("coverage.quotes_ok", False),
+        ("coverage.orders_ok", False),
+        ("coverage.history_ok", {"ETHA": False, "IBIT": True}),
+        ("book_source", "fallback_hint"),
+        ("in_rth", True),
+        ("strategy_module", "some_other_strategy"),
+        ("strategy_params", {"sma_fast": 21}),
+    ]
+
+    def test_every_fingerprint_term_is_individually_falsifiable(self):
+        """LAW #2, POINTED AT THIS GATE: a term no test can make FAIL is not
+        proven, and before this test eleven of the thirteen allowlist terms
+        were exactly that.
+
+        FAILS ON 214c0de: AttributeError, no plan_fingerprint exists.
+
+        ONE LEAF AT A TIME, and that is the whole design. `mutate` replaces a
+        single dotted path in a deep copy of a real built plan and the
+        fingerprint must move. Nulling `ticket` in plan_fingerprint_payload —
+        the reviewer's measurement — now takes the seven ticket rows red at
+        once while `sizing_qty` stays green, which is precisely the
+        discrimination the old suite could not make. subTest names the term, so
+        a failure reads "ticket.validity.min_last is unwatched" rather than
+        "the fingerprint test broke".
+
+        THE MUTATIONS CLEAR THE QUANTIZER ON PURPOSE. Every price moves a full
+        5-cent bucket or more; a sub-grid nudge belongs in the ignore table
+        below and putting one here would produce a red that tempts someone to
+        "fix" a correct fingerprint.
+        """
+        rules = example_rules()
+        plan = self.build_candidate_plan()
+        # the fixture is the thing being measured, asserted before anything
+        # is concluded from it
+        self.assertEqual(plan["symbols"]["ETHA"]["decision"], "candidate")
+        self.assertEqual(plan["symbols"]["ETHA"]["ticket"]["qty"], 11)
+        self.assertEqual(plan["symbols"]["IBIT"]["reason"], "strategy_declined")
+        self.assertTrue(plan["symbols"]["IBIT"]["failed_checks"])
+        self.assertIs(plan["risk_box"]["ok"], True)
+        base_fp = temple_flow_wire.plan_fingerprint(plan, rules)
+
+        for path, value in self.FINGERPRINT_MUST_WATCH:
+            with self.subTest(term=path):
+                moved = self.mutate(plan, path, value)
+                # a mutation that changed nothing would pass this test for the
+                # worst possible reason
+                self.assertNotEqual(
+                    json.dumps(plan, sort_keys=True, default=str),
+                    json.dumps(moved, sort_keys=True, default=str),
+                    "mutation was a no-op: " + path,
+                )
+                self.assertNotEqual(
+                    base_fp,
+                    temple_flow_wire.plan_fingerprint(moved, rules),
+                    "fingerprint does not watch " + path,
+                )
+
+        # the risk box's CLAUSE NAMES, which need a plan where one has fired
+        blocked = self.build_blocked_plan()
+        self.assert_box_is_the_studio_state(blocked)
+        blocked_fp = temple_flow_wire.plan_fingerprint(blocked, rules)
+        renamed = self.mutate(
+            blocked, "risk_box.reasons", ["peak_dd: 0.4000 >= 0.18"]
+        )
+        self.assertNotEqual(
+            blocked_fp,
+            temple_flow_wire.plan_fingerprint(renamed, rules),
+            "fingerprint does not watch which risk-box clause fired",
+        )
+        per_symbol = self.mutate(
+            blocked, "symbols.ETHA.risk_box", ["peak_dd: 0.4000 >= 0.18"]
+        )
+        self.assertNotEqual(
+            blocked_fp,
+            temple_flow_wire.plan_fingerprint(per_symbol, rules),
+            "fingerprint does not watch the per-symbol risk-box clause",
+        )
+
+        # and the law itself, which is not in the plan at all
+        edited = example_rules()
+        edited["risk"]["max_ticket_notional_pct"] = 0.20
+        self.assertNotEqual(
+            base_fp,
+            temple_flow_wire.plan_fingerprint(plan, edited),
+            "fingerprint does not watch the rules",
+        )
+
+    #: (dotted path, replacement) pairs that must NOT move the fingerprint.
+    #: The clock, the prose, the arithmetic, sub-grid price dust, and — the
+    #: load-bearing one — fields that do not exist yet.
+    FINGERPRINT_MUST_IGNORE = [
+        # the three copies of the cycle's own clock. Any of them in the
+        # fingerprint makes every cycle differ and the feature inert.
+        ("symbols.ETHA.ticket.id", "TF-PLAN-20991231-2359-ETHA"),
+        ("symbols.ETHA.ticket.planned_at", "2099-12-31T23:59:00-05:00"),
+        ("symbols.ETHA.ticket.source_plan", "2099-12-31_2359.json"),
+        ("planned_at", "2099-12-31T23:59:00-05:00"),
+        ("data_as_of", {"quotes": "2099-12-31T23:59:00-05:00", "history": {}}),
+        ("symbols.ETHA.features.history_as_of", "2099-12-31T23:59:00-05:00"),
+        ("symbols.ETHA.features.quote_as_of", "2099-12-31T23:59:00-05:00"),
+        # prose generated from numbers already watched
+        ("symbols.ETHA.rationale", "rewritten prose"),
+        ("symbols.ETHA.ticket.validity.rationale", "rewritten prose"),
+        ("note", "a different note"),
+        ("planner", "someone_else"),
+        # echoes of watched terms, named in _fingerprint_ticket's docstring
+        ("symbols.ETHA.ticket.validity.planned_last", 99.99),
+        ("symbols.ETHA.ticket.validity.planned_atr", 9.99),
+        # arithmetic on a qty and a price that are both already watched
+        ("symbols.ETHA.sizing.risk_dollars", 999.99),
+        ("symbols.ETHA.sizing.notional", 999.99),
+        ("symbols.ETHA.sizing.equity", 999.99),
+        ("equity", 999.99),
+        # pure functions of features that ARE watched
+        ("symbols.ETHA.features.dist_to_sma20_pct", 0.99),
+        ("symbols.ETHA.features.last_vs_cap", 9.99),
+        ("symbols.ETHA.features.working_entry_id", "ORD-123"),
+        ("symbols.ETHA.features.sma_fast_period", 99),
+        ("symbols.ETHA.features.slope_lookback", 99),
+        # re-derived from the decisions, never trusted as stated
+        ("candidates", ["TF-PLAN-20991231-2359-ETHA", "TF-PLAN-20991231-2359-IBIT"]),
+        ("rules_path", "/some/other/path.json"),
+        ("schema", "temple_flow_plan_v99"),
+        # SUB-GRID DUST. 18.50 -> 18.52 and 18.50 -> 18.51 are bucket 370;
+        # 17.98 -> 17.99 is bucket 359; 0.26 -> 0.2649 is 26 cents.
+        ("symbols.ETHA.features.last", 18.52),
+        ("symbols.ETHA.ticket.limit", 18.51),
+        ("symbols.ETHA.ticket.stop", 17.99),
+        ("symbols.ETHA.features.atr14", 0.2649),
+        ("symbols.ETHA.features.ret5d", 0.010499),
+        # THE ALLOWLIST PROPERTY ITSELF, which is the argument the whole block
+        # rests on: a field someone adds next month is simply NOT WATCHED. A
+        # blocklist would leak it — and if it were a timestamp, every cycle
+        # would differ and the feature would revert to 96 files a day while
+        # still looking installed. There is no alarm for that; there is this.
+        ("symbols.ETHA.features.some_field_added_in_2027", "2027-01-01T00:00:00Z"),
+        ("symbols.ETHA.some_entry_field_added_in_2027", "2027-01-01T00:00:00Z"),
+        ("some_top_level_field_added_in_2027", "2027-01-01T00:00:00Z"),
+    ]
+
+    def test_the_fingerprint_ignores_the_clock_the_prose_and_the_arithmetic(self):
+        """The other half of law #2: a detector that fires on everything is not
+        a detector. Each row must leave the fingerprint IDENTICAL.
+
+        FAILS ON 214c0de: AttributeError, no plan_fingerprint exists.
+
+        The last three rows are the ones worth reading twice. They add fields
+        that do not exist today, which is the allowlist's entire claim: a
+        blocklist ("copy the plan, drop planned_at") would let a timestamp
+        added next month into the fingerprint, every cycle would differ, and
+        the feature would silently revert to writing a file per cycle while
+        still looking installed.
+        """
+        rules = example_rules()
+        plan = self.build_candidate_plan()
+        base_fp = temple_flow_wire.plan_fingerprint(plan, rules)
+        for path, value in self.FINGERPRINT_MUST_IGNORE:
+            with self.subTest(term=path):
+                moved = self.mutate(plan, path, value)
+                self.assertNotEqual(
+                    json.dumps(plan, sort_keys=True, default=str),
+                    json.dumps(moved, sort_keys=True, default=str),
+                    "mutation was a no-op: " + path,
+                )
+                self.assertEqual(
+                    base_fp,
+                    temple_flow_wire.plan_fingerprint(moved, rules),
+                    "fingerprint fires on " + path,
+                )
+
+        # the risk box's reason NUMBERS, deliberately ignored in favour of the
+        # clause name: "day_breaker: day_pnl=-12.3456 ..." carries four
+        # decimals of live P&L and would re-create the pileup by itself.
+        blocked = self.build_blocked_plan()
+        blocked_fp = temple_flow_wire.plan_fingerprint(blocked, rules)
+        renumbered = self.mutate(blocked, "risk_box.reasons", ["max_opens: 41 >= 41"])
+        self.assertEqual(
+            blocked_fp,
+            temple_flow_wire.plan_fingerprint(renumbered, rules),
+            "fingerprint fires on the risk box's formatted numbers",
+        )
+
+    def test_the_ticket_terms_reach_the_fingerprint_only_through_fingerprint_ticket(
+        self,
+    ):
+        """THE RECEIPT: proof that the table above can go RED.
+
+        This reproduces the reviewer's own 2026-09-05 measurement as a
+        permanent test. They mutated plan_fingerprint_payload in-process to
+        null `ticket` for every symbol and the full 172-test suite stayed
+        GREEN — which is how qty / limit / stop / validity.max_last /
+        validity.min_last turned out to be watched by nothing that could say
+        so. With _fingerprint_ticket stubbed to None here, every ticket-only
+        mutation must COLLIDE.
+
+        Two things follow, and both are the point. The mutations in
+        FINGERPRINT_MUST_WATCH are load-bearing rather than decorative: delete
+        them and this stub is the only thing left that would notice. And if a
+        refactor ever routes those terms into the payload by some other road,
+        this test goes red and names the assumption that expired.
+
+        `sizing.qty` is asserted to STILL move the fingerprint under the same
+        stub, because the two share counts must be discriminable — a suite that
+        could not tell "the ticket is unwatched" from "sizing is unwatched"
+        is the suite that missed this in the first place.
+        """
+        rules = example_rules()
+        plan = self.build_candidate_plan()
+        ticket_only = [
+            row
+            for row in self.FINGERPRINT_MUST_WATCH
+            if row[0].startswith("symbols.ETHA.ticket.")
+        ]
+        # The filter is asserted, not assumed: an empty list would make this
+        # test pass by testing nothing. ADDING A TICKET ROW TO
+        # FINGERPRINT_MUST_WATCH TAKES THIS LINE RED ON PURPOSE — bump the
+        # number, do not loosen the assertion. The count is what stops a
+        # mis-typed prefix from silently reducing this proof to zero rows.
+        self.assertEqual(len(ticket_only), 13, [r[0] for r in ticket_only])
+
+        with patched("_fingerprint_ticket", lambda t: None):
+            blind_fp = temple_flow_wire.plan_fingerprint(plan, rules)
+            for path, value in ticket_only:
+                with self.subTest(term=path):
+                    self.assertEqual(
+                        blind_fp,
+                        temple_flow_wire.plan_fingerprint(
+                            self.mutate(plan, path, value), rules
+                        ),
+                        path + " survives a nulled _fingerprint_ticket, so the "
+                        "ticket rows of FINGERPRINT_MUST_WATCH no longer prove it",
+                    )
+            # ... and the OTHER copy of the share count is untouched by the stub
+            self.assertNotEqual(
+                blind_fp,
+                temple_flow_wire.plan_fingerprint(
+                    self.mutate(plan, "symbols.ETHA.sizing.qty", 12), rules
+                ),
+            )
+
+        # the stub is gone; the real thing watches them again
+        self.assertNotEqual(
+            temple_flow_wire.plan_fingerprint(plan, rules),
+            temple_flow_wire.plan_fingerprint(
+                self.mutate(plan, "symbols.ETHA.ticket.limit", 18.60), rules
+            ),
+        )
+
+    def test_every_risk_box_reason_yields_a_clause_name_with_no_numbers(self):
+        """_risk_box_clauses splits on the first colon, and that is a
+        BLOCKLIST-SHAPED assumption sitting inside a block whose whole argument
+        is that blocklists fail open and invisibly.
+
+        FAILS ON 214c0de: AttributeError, no _risk_box_clauses exists.
+
+        All three reasons risk_box can build carry "name: numbers" today. A
+        fourth appended without a colon would put its formatted live numbers
+        into the fingerprint, every cycle would differ, and the symptom is the
+        feature silently reverting to one file per cycle while still looking
+        installed. So the invariant is asserted where the reasons are BUILT,
+        against every clause tripped for real, and it is asserted as NO DIGITS
+        rather than as "contains a colon": the colon is today's mechanism, the
+        absence of live numbers is the actual requirement.
+        """
+        rules = example_rules()
+        cases = {
+            # -30.00 is past -4.5% of 596.86 (-26.86)
+            "day_breaker": base_book(day_pnl=-30.0),
+            # (596.86 - 400) / 596.86 = 0.3298, past 0.18
+            "peak_dd": base_book(equity=400.0, day_pnl=0.0),
+            "max_opens": self.blocked_book(),
+        }
+        for clause, book in cases.items():
+            with self.subTest(clause=clause):
+                box = temple_flow_wire.risk_box(rules, book)
+                self.assertIs(box["ok"], False)
+                names = temple_flow_wire._risk_box_clauses(box["reasons"])
+                self.assertIn(clause, names, box["reasons"])
+                for reason, name in zip(sorted(box["reasons"]), names):
+                    self.assertFalse(
+                        any(ch.isdigit() for ch in name),
+                        "a risk_box reason leaked live numbers into the "
+                        "fingerprint: " + repr(reason) + " -> " + repr(name),
+                    )
+
+        # and the whole set at once, so a reason added without a colon is
+        # caught even if its clause never fires alone
+        every = temple_flow_wire.risk_box(
+            rules, self.blocked_book(equity=400.0, day_pnl=-30.0)
+        )
+        self.assertEqual(len(every["reasons"]), 3, every["reasons"])
+        self.assertEqual(
+            temple_flow_wire._risk_box_clauses(every["reasons"]),
+            ["day_breaker", "max_opens", "peak_dd"],
+        )
+
+        # THE NEGATIVE CONTROL, and without it everything above is a positive
+        # control that cannot fail. The docstring on _risk_box_clauses promises
+        # "add a reason without a colon and that test goes red"; this is the
+        # line that makes that true. A colonless reason splits to itself,
+        # digits and all, and the digit check must SEE that — a check that is
+        # merely true today, and structurally incapable of being false, is the
+        # same fail-open shape as the blocker this section exists to close.
+        leaked = temple_flow_wire._risk_box_clauses(["new_clause 4 >= 4"])
+        self.assertEqual(leaked, ["new_clause 4 >= 4"])
+        self.assertTrue(
+            any(ch.isdigit() for ch in leaked[0]),
+            "the digit check cannot fire, so the loop above proves nothing",
+        )
+
 
 
 class TestApprovePlanCli(unittest.TestCase):
