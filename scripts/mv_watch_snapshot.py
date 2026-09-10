@@ -8,6 +8,13 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+# Import flatten_orders from wire before BROKER path manipulation
+# (both in scripts/, so this is safe before chdir)
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+from temple_flow_wire import flatten_orders
+sys.path.pop(0)
+
 BROKER = Path(os.environ.get("SPIRAL_BROKER_ROOT", Path.home() / "spiral-broker")).expanduser()
 sys.path.insert(0, str(BROKER))
 os.chdir(BROKER)
@@ -103,6 +110,8 @@ def main() -> int:
     else:
         data = r.json()
         data = data if isinstance(data, list) else (data.get("orders") or [])
+        # Flatten childOrderStrategies so child STOP orders are visible (TF-20260903-06 fix)
+        data = flatten_orders(data)
         out = []
         for o in data:
             legs = [
