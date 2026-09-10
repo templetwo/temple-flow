@@ -206,6 +206,10 @@ TERMINAL_REFUSALS = frozenset(
         "cancel_order_id_not_working_in_book",
         "cancel_symbol_not_in_live_universe",
         "cancel_skipped_refused_today",
+        # place_protect_stop terminal refusals (2026-09-10)
+        "no_position_to_protect",
+        "protect_qty_exceeds_position",
+        "not_in_live_or_protect_universe",
         # 2026-09-04. The re-evaluation verdict: the ticket carried a
         # `validity` block, the daemon re-read the world at execution time, and
         # a condition the human approved is no longer true.
@@ -3295,6 +3299,16 @@ def _ticket_schema_errors(t: dict) -> list[str]:
             errs.append("stop_side_must_be_SELL")
         if px_ok and float(t.get("stop")) >= float(t.get("limit")):
             errs.append("stop_must_be_below_limit_for_buy")
+    elif a == "place_protect_stop":
+        sym = t.get("symbol")
+        if not isinstance(sym, str) or not sym.strip():
+            errs.append("symbol_must_be_nonempty_string")
+        qty = t.get("qty")
+        if not isinstance(qty, int) or isinstance(qty, bool) or qty <= 0:
+            errs.append("qty_must_be_positive_int")
+        stop = t.get("stop")
+        if not _is_num(stop) or float(stop) <= 0:
+            errs.append("stop_must_be_positive_number")
     elif a == "cancel_by_id":
         oid = t.get("order_id")
         if (
@@ -3606,6 +3620,45 @@ def gate_outbox_ticket(
             return "cancel_symbol_not_in_live_universe", detail
         if not rth:
             return "outside_rth", detail
+        return None, detail
+
+    # --- place_protect_stop ---
+    if action == "place_protect_stop":
+        sym = str(t.get("symbol")).strip().upper()
+        qty = int(t.get("qty"))
+        stop = float(t.get("stop"))
+        detail.update({"symbol": sym, "ticket_qty": qty, "stop": stop})
+
+        # Universe check: protect can work on LIVE_UNIVERSE or PROTECT_ONLY
+        if sym not in LIVE_UNIVERSE and sym not in PROTECT_ONLY:
+            return "not_in_live_or_protect_universe", detail
+
+        # Position check: must have a long position to protect (terminal)
+        pos_qty = position_qty(book, sym)
+        detail["position_qty"] = pos_qty
+        if pos_qty <= 0:
+            return "no_position_to_protect", detail
+
+        # Qty check: protect qty must not exceed position (terminal)
+        if qty > pos_qty:
+            return "protect_qty_exceeds_position", detail
+
+        # One-sell law: no duplicate SELL orders (terminal)
+        # This includes both explicit protect stops AND child stops from filled brackets
+        sell = existing_sell(book, sym)
+        if sell:
+            detail["existing_order_id"] = sell.get("id") or sell.get("orderId")
+            detail["existing_order_type"] = sell.get("type")
+            detail["existing_order_status"] = sell.get("status")
+            return "one_sell_law_existing_sell", detail
+
+        # Protect is hygiene on an existing long, NOT new entry risk.
+        # human approve_plan is the auth when MV disarmed; arm/RTH only gate new entries.
+        # GTC STOP may sit PENDING_ACTIVATION after hours; after-hours POST is allowed.
+        # (cancel is what 400s outside RTH; protect stop POST does not.)
+        # NO arm_required, NO outside_rth, NO risk_box blocking.
+
+        # Passed all gates
         return None, detail
 
     # --- place_gtc_bracket ---
@@ -4114,6 +4167,44 @@ def execute_outbox_ticket(
             record_in_cycle_order(book, detail, res.get("order_id"))
         if posted and path is not None:
             # stamp BEFORE the move — idempotency does not depend on the move
+            out["stamped"] = stamp_ticket_order_id(
+                path, t, res.get("order_id") or "posted_no_location"
+            )
+        return out
+
+    if action == "place_protect_stop":
+        res = place_protect_stop(
+            symbol=detail["symbol"],
+            qty=detail["ticket_qty"],
+            stop=detail["stop"],
+        )
+        out["schwab"] = {k: res.get(k) for k in ("http", "order_id", "error")}
+        posted = res.get("http") in (200, 201)
+        out["sent"] = posted
+        out["mutated"] = posted
+        out["execute"] = "posted" if posted else "post_failed"
+        if posted:
+            # Record in-cycle: a protect STOP placed in this cycle must be visible
+            # to subsequent gates and to plan_actions running on the same book.
+            # Unlike record_in_cycle_order (which records a bracket with BUY+STOP),
+            # this records only the SELL STOP.
+            oid = str(res.get("order_id") or "in_cycle_protect")
+            book.setdefault("orders", []).append(
+                {
+                    "id": oid,
+                    "symbol": detail["symbol"],
+                    "side": "SELL",
+                    "status": "WORKING",
+                    "type": "STOP",
+                    "stopPrice": detail["stop"],
+                    "duration": "GOOD_TILL_CANCEL",
+                    "qty": detail["ticket_qty"],
+                    "remaining": detail["ticket_qty"],
+                    "in_cycle": True,
+                }
+            )
+            book.setdefault("_in_cycle_orders", []).append(oid)
+        if posted and path is not None:
             out["stamped"] = stamp_ticket_order_id(
                 path, t, res.get("order_id") or "posted_no_location"
             )

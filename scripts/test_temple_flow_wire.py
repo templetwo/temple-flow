@@ -18,7 +18,7 @@ import sys
 import tempfile
 import unittest
 from copy import deepcopy
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -54,6 +54,7 @@ from temple_flow_wire import (  # noqa: E402
     duplicate_working_order,
     execute_action,
     execute_outbox_ticket,
+    flatten_orders,
     gate_outbox_ticket,
     live_authorized,
     load_outbox_tickets,
@@ -5175,6 +5176,364 @@ class TestReviewFixes20260904(unittest.TestCase):
         )
         for bad in ("../x", "a/b", "", ".", "..", "/abs", "x\x00y"):
             self.assertIsNone(temple_flow_wire._SAFE_TICKET_ID.match(bad), bad)
+
+
+class TestDeskFacingChildOrderVisibility(unittest.TestCase):
+    """Tests for Defect A: desk-facing tools must see flattened child orders."""
+
+    def test_slim_book_without_flatten_misses_child_stop(self):
+        """OLD BUG: Without flatten, existing_sell misses child STOP (false 'IBIT naked').
+        
+        This demonstrates the defect: a filled parent + working child STOP looks like
+        no protection when the book doesn't flatten childOrderStrategies.
+        """
+        # Slim book representation (what Schwab returns with nested childOrderStrategies)
+        slim_raw_orders = [
+            {
+                "orderId": "1007762031724",
+                "status": "FILLED",
+                "orderType": "LIMIT",
+                "price": 43.90,
+                "duration": "GOOD_TILL_CANCEL",
+                "quantity": 2,
+                "filledQuantity": 2,
+                "remainingQuantity": 0,
+                "orderLegCollection": [
+                    {"instruction": "BUY", "quantity": 2, "instrument": {"symbol": "IBIT"}}
+                ],
+                # Child stop nested here - invisible without flatten
+                "childOrderStrategies": [
+                    {
+                        "orderId": "1007762031725",
+                        "status": "WORKING",
+                        "orderType": "STOP",
+                        "stopPrice": 41.20,
+                        "duration": "GOOD_TILL_CANCEL",
+                        "quantity": 2,
+                        "remainingQuantity": 2,
+                        "orderLegCollection": [
+                            {"instruction": "SELL", "quantity": 2, "instrument": {"symbol": "IBIT"}}
+                        ],
+                    }
+                ],
+            }
+        ]
+        
+        # OLD BEHAVIOR: Process orders without flattening (top-level only)
+        # Build slim book that only sees parent, not child
+        slim_orders = []
+        for o in slim_raw_orders:
+            legs = o.get("orderLegCollection") or []
+            slim_orders.append({
+                "id": o.get("orderId"),
+                "symbol": (legs[0].get("instrument") or {}).get("symbol") if legs else None,
+                "side": "BUY" if any("BUY" in str(x.get("instruction") or "") for x in legs) else "SELL",
+                "status": o.get("status"),
+                "type": o.get("orderType"),
+                "price": o.get("price"),
+                "qty": o.get("quantity"),
+                "filledQty": o.get("filledQuantity"),
+                "remaining": o.get("remainingQuantity"),
+            })
+        
+        slim_book = base_book(
+            positions=[{"symbol": "IBIT", "qty": 2}],
+            orders=slim_orders,
+        )
+        
+        # OLD BEHAVIOR: existing_sell returns None because child is not visible
+        # This caused false "IBIT naked" protect tickets
+        existing = temple_flow_wire.existing_sell(slim_book, "IBIT")
+        self.assertIsNone(existing, "OLD BUG: child stop not visible without flatten")
+
+    def test_flattened_book_finds_child_stop(self):
+        """FIXED: With flatten, existing_sell finds child STOP (correct protection status)."""
+        # Same raw Schwab data, but now with flatten_orders applied
+        slim_raw_orders = [
+            {
+                "orderId": "1007762031724",
+                "status": "FILLED",
+                "orderType": "LIMIT",
+                "price": 43.90,
+                "duration": "GOOD_TILL_CANCEL",
+                "quantity": 2,
+                "filledQuantity": 2,
+                "remainingQuantity": 0,
+                "orderLegCollection": [
+                    {"instruction": "BUY", "quantity": 2, "instrument": {"symbol": "IBIT"}}
+                ],
+                "childOrderStrategies": [
+                    {
+                        "orderId": "1007762031725",
+                        "status": "WORKING",
+                        "orderType": "STOP",
+                        "stopPrice": 41.20,
+                        "duration": "GOOD_TILL_CANCEL",
+                        "quantity": 2,
+                        "remainingQuantity": 2,
+                        "orderLegCollection": [
+                            {"instruction": "SELL", "quantity": 2, "instrument": {"symbol": "IBIT"}}
+                        ],
+                    }
+                ],
+            }
+        ]
+        
+        # FIXED BEHAVIOR: Apply flatten_orders first
+        flattened_raw = flatten_orders(slim_raw_orders)
+        self.assertEqual(len(flattened_raw), 2, "flatten must surface parent + child")
+        
+        # Build book from flattened orders
+        flattened_orders = []
+        for o in flattened_raw:
+            legs = o.get("orderLegCollection") or []
+            flattened_orders.append({
+                "id": o.get("orderId"),
+                "symbol": (legs[0].get("instrument") or {}).get("symbol") if legs else None,
+                "side": "BUY" if any("BUY" in str(x.get("instruction") or "") for x in legs) else "SELL",
+                "status": o.get("status"),
+                "type": o.get("orderType"),
+                "stopPrice": o.get("stopPrice"),
+                "qty": o.get("quantity"),
+                "remaining": o.get("remainingQuantity"),
+            })
+        
+        flattened_book = base_book(
+            positions=[{"symbol": "IBIT", "qty": 2}],
+            orders=flattened_orders,
+        )
+        
+        # FIXED BEHAVIOR: existing_sell finds the child stop
+        existing = temple_flow_wire.existing_sell(flattened_book, "IBIT")
+        self.assertIsNotNone(existing, "FIXED: child stop must be visible after flatten")
+        self.assertEqual(existing["id"], "1007762031725")
+        self.assertEqual(existing["type"], "STOP")
+    
+    def test_flatten_orders_surfaces_nested_child(self):
+        """Unit test: flatten_orders recursively surfaces childOrderStrategies."""
+        raw = [
+            {
+                "orderId": "1007762031724",
+                "status": "FILLED",
+                "childOrderStrategies": [
+                    {"orderId": "1007762031725", "status": "WORKING"}
+                ],
+            }
+        ]
+        flat = flatten_orders(raw)
+        self.assertEqual(len(flat), 2, "Must surface both parent and child")
+        self.assertEqual(flat[0]["orderId"], "1007762031724")
+        self.assertEqual(flat[1]["orderId"], "1007762031725")
+
+    def test_protect_check_refuses_duplicate_with_child_stop(self):
+        """E2E: place_protect_stop outbox ticket refuses when child STOP already exists."""
+        t = {
+            "id": "TF-20260903-06",
+            "action": "place_protect_stop",
+            "symbol": "IBIT",
+            "qty": 2,
+            "stop": 40.00,  # Trying to place a second stop
+        }
+        # Book with flattened child stop visible
+        book = base_book(
+            positions=[{"symbol": "IBIT", "qty": 2}],
+            orders=[
+                {
+                    "id": "1007762031724",
+                    "symbol": "IBIT",
+                    "side": "BUY",
+                    "status": "FILLED",
+                    "type": "LIMIT",
+                },
+                {
+                    "id": "1007762031725",
+                    "symbol": "IBIT",
+                    "side": "SELL",
+                    "status": "WORKING",
+                    "type": "STOP",
+                    "stopPrice": 41.20,
+                    "qty": 2,
+                    "remaining": 2,
+                },
+            ],
+        )
+        
+        reason, detail = temple_flow_wire.gate_outbox_ticket(
+            t, example_rules(), book, now=datetime(2026, 9, 10, 14, 0, tzinfo=timezone.utc)
+        )
+        self.assertEqual(reason, "one_sell_law_existing_sell")
+        self.assertEqual(detail["existing_order_id"], "1007762031725")
+
+
+class TestOutboxPlaceProtectStop(unittest.TestCase):
+    """Tests for place_protect_stop action in the outbox (Defect B fix)."""
+
+    def test_place_protect_stop_schema_accepted(self):
+        """place_protect_stop action passes schema validation (was unknown_action)."""
+        t = {
+            "id": "TF-20260903-06",
+            "action": "place_protect_stop",
+            "symbol": "IBIT",
+            "qty": 2,
+            "stop": 41.20,
+        }
+        errs = temple_flow_wire._ticket_schema_errors(t)
+        self.assertEqual(errs, [], "place_protect_stop must be recognized")
+
+    def test_place_protect_stop_schema_missing_fields(self):
+        """Schema validator catches missing required fields."""
+        t = {"id": "TF-TEST", "action": "place_protect_stop"}
+        errs = temple_flow_wire._ticket_schema_errors(t)
+        self.assertIn("symbol_must_be_nonempty_string", errs)
+        self.assertIn("qty_must_be_positive_int", errs)
+        self.assertIn("stop_must_be_positive_number", errs)
+
+    def test_place_protect_stop_refuses_without_position(self):
+        """Terminal refusal when no position exists to protect."""
+        t = {
+            "id": "TF-TEST",
+            "action": "place_protect_stop",
+            "symbol": "IBIT",
+            "qty": 2,
+            "stop": 41.20,
+        }
+        reason, detail = temple_flow_wire.gate_outbox_ticket(
+            t, example_rules(), base_book(), now=datetime(2026, 9, 10, 14, 0, tzinfo=timezone.utc)
+        )
+        self.assertEqual(reason, "no_position_to_protect")
+        self.assertEqual(detail["position_qty"], 0)
+
+    def test_place_protect_stop_refuses_when_sell_already_working(self):
+        """One-sell law: refuse when a SELL order (including child stop) already exists."""
+        t = {
+            "id": "TF-TEST",
+            "action": "place_protect_stop",
+            "symbol": "IBIT",
+            "qty": 2,
+            "stop": 40.00,
+        }
+        book = base_book(
+            positions=[{"symbol": "IBIT", "qty": 2}],
+            orders=[
+                {
+                    "id": "1007762031725",
+                    "symbol": "IBIT",
+                    "side": "SELL",
+                    "status": "WORKING",
+                    "type": "STOP",
+                    "stopPrice": 41.20,
+                    "qty": 2,
+                    "remaining": 2,
+                }
+            ],
+        )
+        reason, detail = temple_flow_wire.gate_outbox_ticket(
+            t, example_rules(), book, now=datetime(2026, 9, 10, 14, 0, tzinfo=timezone.utc)
+        )
+        self.assertEqual(reason, "one_sell_law_existing_sell")
+        self.assertEqual(detail["existing_order_id"], "1007762031725")
+        self.assertEqual(detail["existing_order_type"], "STOP")
+
+    def test_place_protect_stop_passes_gates_with_position(self):
+        """Passes gates when position exists, no conflicting SELL (RTH not required)."""
+        t = {
+            "id": "TF-TEST",
+            "action": "place_protect_stop",
+            "symbol": "NVO",
+            "qty": 1,
+            "stop": 100.00,
+        }
+        book = base_book(
+            positions=[{"symbol": "NVO", "qty": 1}, {"symbol": "NOK", "qty": 1}],
+            quotes={"NVO": {"last": 105.00}},
+        )
+        reason, detail = temple_flow_wire.gate_outbox_ticket(
+            t, example_rules(), book, now=datetime(2026, 9, 10, 14, 0, tzinfo=timezone.utc)
+        )
+        self.assertIsNone(reason, f"Should pass gates but got: {reason}")
+        self.assertEqual(detail["action"], "place_protect_stop")
+        self.assertEqual(detail["symbol"], "NVO")
+
+    def test_place_protect_stop_passes_when_disarmed_and_outside_rth(self):
+        """Protect does NOT require arm or RTH (hygiene on existing long, not new entry)."""
+        t = {
+            "id": "TF-20260903-06",
+            "action": "place_protect_stop",
+            "symbol": "IBIT",
+            "qty": 2,
+            "stop": 41.20,
+        }
+        # Disarmed book outside RTH (03:00 ET)
+        book = base_book(
+            positions=[{"symbol": "IBIT", "qty": 2}],
+            armed=False,
+            in_rth=False,
+        )
+        reason, detail = temple_flow_wire.gate_outbox_ticket(
+            t, example_rules(), book, now=datetime(2026, 9, 10, 7, 0, tzinfo=timezone.utc)
+        )
+        # Must pass: human approve_plan is the auth when disarmed
+        self.assertIsNone(reason, f"Protect must not require arm/RTH but got: {reason}")
+        self.assertFalse(detail.get("in_rth", True), "Test fixture must be outside RTH")
+
+    def test_place_protect_stop_refuses_qty_exceeds_position(self):
+        """Terminal refusal when protect qty exceeds position."""
+        t = {
+            "id": "TF-TEST",
+            "action": "place_protect_stop",
+            "symbol": "IBIT",
+            "qty": 5,
+            "stop": 41.20,
+        }
+        book = base_book(positions=[{"symbol": "IBIT", "qty": 2}])
+        reason, _ = temple_flow_wire.gate_outbox_ticket(
+            t, example_rules(), book, now=datetime(2026, 9, 10, 14, 0, tzinfo=timezone.utc)
+        )
+        self.assertEqual(reason, "protect_qty_exceeds_position")
+
+    def test_place_protect_stop_executes_and_records_in_cycle(self):
+        """execute_outbox_ticket posts place_protect_stop and records in-cycle."""
+        t = {
+            "id": "TF-TEST",
+            "action": "place_protect_stop",
+            "symbol": "NVO",
+            "qty": 1,
+            "stop": 100.00,
+        }
+        book = base_book(positions=[{"symbol": "NVO", "qty": 1}, {"symbol": "NOK", "qty": 1}])
+        with no_network(), patched("place_protect_stop", lambda **kw: {"http": 201, "order_id": "999"}):
+            out = temple_flow_wire.execute_outbox_ticket(
+                {"ticket": t},
+                live=True,
+                rules=example_rules(),
+                book=book,
+                now=datetime(2026, 9, 10, 14, 0, tzinfo=timezone.utc),
+            )
+        self.assertTrue(out["sent"])
+        self.assertTrue(out["mutated"])
+        self.assertEqual(out["execute"], "posted")
+        self.assertEqual(out["schwab"]["order_id"], "999")
+        # Check in-cycle tracking
+        self.assertEqual(len(book.get("_in_cycle_orders") or []), 1)
+
+    def test_old_behavior_would_have_rejected_unknown_action(self):
+        """Demonstrates the bug: old code rejected place_protect_stop as unknown_action.
+        
+        This test would FAIL against the old _ticket_schema_errors that only
+        recognized place_gtc_bracket and cancel_by_id.
+        """
+        t = {
+            "id": "TF-20260903-06",
+            "action": "place_protect_stop",
+            "symbol": "IBIT",
+            "qty": 2,
+            "stop": 41.20,
+        }
+        # Simulate old behavior by calling a function that would reject it
+        # The fix means this now returns [] instead of ["unknown_action"]
+        errs = temple_flow_wire._ticket_schema_errors(t)
+        self.assertNotIn("unknown_action", errs, 
+                        "OLD BUG: place_protect_stop was rejected as unknown_action")
 
 
 if __name__ == "__main__":
