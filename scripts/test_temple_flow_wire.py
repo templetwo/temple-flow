@@ -48,6 +48,8 @@ sys.path.insert(0, str(HERE))
 import temple_flow_strategy  # noqa: E402
 import temple_flow_wire  # noqa: E402
 from temple_flow_wire import (  # noqa: E402
+    flatten_orders,
+    normalize_schwab_orders,
     clip_qty,
     duplicate_working_order,
     execute_action,
@@ -5177,3 +5179,103 @@ class TestReviewFixes20260904(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class ChildOrderFlattenTests(unittest.TestCase):
+    """The 09-03 shape, driven through the real mapping.
+
+    Schwab nests the protective STOP under the filled TRIGGER parent and does NOT
+    also list it at top level. Before flattening, existing_sell/existing_protect
+    read a protected IBIT position as bare; the desk rolled protect tickets
+    TF-20260903-01..06 against a gap that was already closed, and 06 was REJECTED
+    by Schwab's one-sell law. These fixtures are raw Schwab JSON on purpose: a
+    test built from already-flattened internal dicts passes on unfixed code and
+    proves nothing.
+    """
+
+    # Real ids and prices from the incident, kept so the fixture is traceable.
+    RAW_0903 = [
+        {
+            "orderId": 1007762031724,
+            "status": "FILLED",
+            "orderType": "LIMIT",
+            "price": 43.90,
+            "quantity": 2.0,
+            "filledQuantity": 2.0,
+            "remainingQuantity": 0.0,
+            "duration": "GOOD_TILL_CANCEL",
+            "orderLegCollection": [
+                {"instruction": "BUY", "quantity": 2.0,
+                 "instrument": {"symbol": "IBIT"}}
+            ],
+            "childOrderStrategies": [
+                {
+                    "orderId": 1007762031725,
+                    "status": "PENDING_ACTIVATION",
+                    "orderType": "STOP",
+                    "stopPrice": 41.20,
+                    "quantity": 2.0,
+                    "filledQuantity": 0.0,
+                    "remainingQuantity": 2.0,
+                    "duration": "GOOD_TILL_CANCEL",
+                    "orderLegCollection": [
+                        {"instruction": "SELL", "quantity": 2.0,
+                         "instrument": {"symbol": "IBIT"}}
+                    ],
+                }
+            ],
+        }
+    ]
+
+    def _book(self, raw):
+        return {"orders": normalize_schwab_orders(raw), "orders_ok": True,
+                "positions": [], "quotes": {}}
+
+    def test_child_stop_is_visible_to_existing_sell(self):
+        """The assertion that fails on unfixed main. This is the fix."""
+        book = self._book(self.RAW_0903)
+        found = temple_flow_wire.existing_sell(book, "IBIT")
+        self.assertIsNotNone(found, "child STOP invisible -> desk sees a false gap")
+        self.assertEqual(str(found["id"]), "1007762031725")
+
+    def test_child_stop_is_visible_to_existing_protect(self):
+        book = self._book(self.RAW_0903)
+        found = temple_flow_wire.existing_protect(book, "IBIT")
+        self.assertIsNotNone(found)
+        self.assertEqual(str(found["id"]), "1007762031725")
+        self.assertEqual(found["stopPrice"], 41.20)
+
+    def test_child_maps_to_a_working_sell(self):
+        """PENDING_ACTIVATION is the live status, not WORKING. Guard the mapping."""
+        child = [o for o in normalize_schwab_orders(self.RAW_0903)
+                 if str(o["id"]) == "1007762031725"][0]
+        self.assertEqual(child["side"], "SELL")
+        self.assertEqual(child["symbol"], "IBIT")
+        self.assertEqual(child["status"], "PENDING_ACTIVATION")
+        self.assertTrue(temple_flow_wire.order_is_working(child))
+
+    def test_parent_and_child_both_present_exactly_once(self):
+        ids = [str(o["id"]) for o in normalize_schwab_orders(self.RAW_0903)]
+        self.assertEqual(ids.count("1007762031724"), 1)
+        self.assertEqual(ids.count("1007762031725"), 1)
+
+    def test_flatten_tolerates_absent_null_and_empty_children(self):
+        self.assertEqual(flatten_orders([]), [])
+        self.assertEqual(flatten_orders(None), [])
+        self.assertEqual(len(flatten_orders([{"orderId": 1}])), 1)
+        self.assertEqual(len(flatten_orders([{"orderId": 1,
+                                              "childOrderStrategies": None}])), 1)
+        self.assertEqual(len(flatten_orders([{"orderId": 1,
+                                              "childOrderStrategies": []}])), 1)
+
+    def test_flatten_handles_depth_two(self):
+        """TRIGGER -> OCO -> leaves. Untested before; assert it does not stop at 1."""
+        raw = [{"orderId": 1, "childOrderStrategies": [
+            {"orderId": 2, "childOrderStrategies": [
+                {"orderId": 3}, {"orderId": 4}]}]}]
+        self.assertEqual([o["orderId"] for o in flatten_orders(raw)], [1, 2, 3, 4])
+
+    def test_order_without_legs_does_not_crash_mapping(self):
+        out = normalize_schwab_orders([{"orderId": 9, "status": "FILLED"}])
+        self.assertEqual(out[0]["symbol"], None)
+        self.assertEqual(out[0]["side"], "")

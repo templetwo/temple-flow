@@ -1239,6 +1239,63 @@ def fallback_book(rules: dict) -> dict:
     }
 
 
+def flatten_orders(raw: list) -> list:
+    """Every order in `raw`, plus every nested childOrderStrategies order, depth-first.
+
+    Schwab returns a TRIGGER parent with its protective STOP nested in
+    `childOrderStrategies`; the child is NOT also listed at top level. A caller
+    that reads only the top level cannot see the stop that is protecting a
+    filled position. Pre-order so a parent still precedes its children.
+    """
+    out: list = []
+    for o in raw or []:
+        out.append(o)
+        out.extend(flatten_orders(o.get("childOrderStrategies") or []))
+    return out
+
+
+def normalize_schwab_orders(raw: list) -> list:
+    """Schwab order JSON -> the internal book shape, children included.
+
+    Pure: no I/O, no globals. This is the surface `fetch_book` was documented as
+    untestable across, lifted out so the 09-03 shape (FILLED TRIGGER parent with a
+    PENDING_ACTIVATION child STOP) can be driven through it in a test.
+    """
+    orders: list[dict] = []
+    for o in flatten_orders(raw):
+        legs = [
+            {
+                "instruction": leg.get("instruction"),
+                "symbol": (leg.get("instrument") or {}).get("symbol"),
+                "qty": leg.get("quantity"),
+            }
+            for leg in (o.get("orderLegCollection") or [])
+        ]
+        orders.append(
+            {
+                "id": o.get("orderId"),
+                "status": o.get("status"),
+                "type": o.get("orderType"),
+                "price": o.get("price"),
+                "stopPrice": o.get("stopPrice"),
+                "duration": o.get("duration"),
+                "qty": o.get("quantity"),
+                "filledQty": o.get("filledQuantity"),
+                "remaining": o.get("remainingQuantity"),
+                "legs": legs,
+                "symbol": (legs[0].get("symbol") if legs else None),
+                "side": (
+                    "BUY"
+                    if any("BUY" in str(x.get("instruction") or "") for x in legs)
+                    else "SELL"
+                    if any("SELL" in str(x.get("instruction") or "") for x in legs)
+                    else ""
+                ),
+            }
+        )
+    return orders
+
+
 def fetch_book() -> tuple[dict | None, str]:
     """Read-only Schwab book. Never prints tokens, account hash, or secrets.
 
@@ -1333,37 +1390,11 @@ def fetch_book() -> tuple[dict | None, str]:
         if orders_ok:
             data = ro.json()
             data = data if isinstance(data, list) else (data.get("orders") or [])
-            for o in data:
-                legs = [
-                    {
-                        "instruction": leg.get("instruction"),
-                        "symbol": (leg.get("instrument") or {}).get("symbol"),
-                        "qty": leg.get("quantity"),
-                    }
-                    for leg in (o.get("orderLegCollection") or [])
-                ]
-                orders.append(
-                    {
-                        "id": o.get("orderId"),
-                        "status": o.get("status"),
-                        "type": o.get("orderType"),
-                        "price": o.get("price"),
-                        "stopPrice": o.get("stopPrice"),
-                        "duration": o.get("duration"),
-                        "qty": o.get("quantity"),
-                        "filledQty": o.get("filledQuantity"),
-                        "remaining": o.get("remainingQuantity"),
-                        "legs": legs,
-                        "symbol": (legs[0].get("symbol") if legs else None),
-                        "side": (
-                            "BUY"
-                            if any("BUY" in str(x.get("instruction") or "") for x in legs)
-                            else "SELL"
-                            if any("SELL" in str(x.get("instruction") or "") for x in legs)
-                            else ""
-                        ),
-                    }
-                )
+            # Schwab nests protective child STOPs under a TRIGGER parent. A book that
+            # lists only top-level orders reports a protected position as bare, and
+            # every existing_sell / existing_protect guard then reads a closed gap as
+            # open. Normalize through flatten_orders so children are first-class.
+            orders = normalize_schwab_orders(data)
 
         quotes: dict = {}
         rq = get("/marketdata/v1/quotes", {"symbols": "ETHA,IBIT,NVO,NOK"})
