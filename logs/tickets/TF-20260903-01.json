@@ -1,0 +1,68 @@
+{
+  "ticket_id": "TF-20260903-01",
+  "created_at_utc": "2026-09-03T11:35:32Z",
+  "desk": "Funds-beast",
+  "lane": "protect",
+  "mv_session": "DISARMED",
+  "mode": "live",
+  "status": "risk_pass_awaiting_human",
+  "symbol": "IBIT",
+  "side": "sell",
+  "action": "protect_stop_first_sell",
+  "qty": 2,
+  "entry": {
+    "type": "stop",
+    "price": 41.2,
+    "tif": "GTC",
+    "instruction": "SELL STOP 2 IBIT @ 41.20 GTC. FIRST SELL only \u2014 no IBIT stop on book. Protect-only, not a new entry. Do not stack a flatten/limit. No DAY. One mutation."
+  },
+  "stop": 41.2,
+  "target": null,
+  "size": {
+    "qty": 2,
+    "notional_usd": 87.8,
+    "pct_equity": 14.7
+  },
+  "risk": {
+    "risk_usd": 5.44,
+    "risk_pct_equity": 0.91,
+    "risk_basis": "qty 2 \u00d7 (fill 43.90 \u2212 stop 41.20 + slip 0.02)",
+    "r_multiple_to_target": null,
+    "commission_slippage_usd": 0.04,
+    "max_risk_usd": 14.93,
+    "atr_filter_triggered": false,
+    "constitution_checks": {
+      "max_risk_ok": true,
+      "max_position_ok": true,
+      "max_position_note": "existing IBIT 2 already on book; this is protect",
+      "max_positions_ok": true,
+      "max_positions_note": "opens stay 4/4 \u2014 not a new slot",
+      "daily_loss_ok": true,
+      "drawdown_ok": true,
+      "hard_stop_present": true
+    }
+  },
+  "book": {
+    "equity_usd": 597.31,
+    "peak_equity_usd": 597.31,
+    "peak_note": "NEW PEAK vs prior 596.86",
+    "cash_usd": 433.47,
+    "sod_usd": 595.71,
+    "open_positions": 4,
+    "ibit_fill": {
+      "qty": 2,
+      "price": 43.9,
+      "stop_on_book": false
+    },
+    "funding_check": "N/A_SELL_STOP"
+  },
+  "one_sell": "PASS \u2014 no existing IBIT stop, this is the first sell. Do not add 45.00 flatten on top.",
+  "closes_gap": true,
+  "approvals": {
+    "human_phrase_required": "approve TF-20260903-01",
+    "human_approved": false,
+    "window_minutes": 30
+  },
+  "execution": null,
+  "note": "NO send until approve TF-20260903-01. MV DISARMED. Protect-only."
+}

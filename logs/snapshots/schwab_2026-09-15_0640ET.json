@@ -1,0 +1,67 @@
+{
+  "ts_et": "2026-09-15T06:40:34.561763-04:00",
+  "ts_utc": "2026-09-15T10:40:34.561763+00:00",
+  "source": "mac spiral-broker run_snapshot.sh \u00a79 size",
+  "mv": "DISARMED",
+  "amendments": [
+    "AMENDMENTS_2026-09-15",
+    "\u00a79 no open-count cap"
+  ],
+  "book": {
+    "equity": 592.32,
+    "cash": 433.47,
+    "avail": 433.47,
+    "bp": 433.47,
+    "lmv": 158.85,
+    "sod": 595.22,
+    "peak": 602.47,
+    "day_pnl": -2.9,
+    "day_pct": -0.487,
+    "dd_pct": 1.685,
+    "positions": [
+      {
+        "symbol": "IBIT",
+        "qty": 2.0,
+        "avg": 43.9,
+        "mv": 87.06,
+        "dayPL": -2.42
+      },
+      {
+        "symbol": "NVO",
+        "qty": 1.0,
+        "avg": 38.92,
+        "mv": 43.17,
+        "dayPL": -0.28
+      },
+      {
+        "symbol": "ETHA",
+        "qty": 1.0,
+        "avg": 18.75,
+        "mv": 18.66,
+        "dayPL": -0.51
+      },
+      {
+        "symbol": "NOK",
+        "qty": 1.0,
+        "avg": 9.97,
+        "mv": 9.96,
+        "dayPL": 0.31
+      }
+    ]
+  },
+  "quotes": {
+    "IBIT": {
+      "last": 43.53,
+      "mark": 43.53
+    },
+    "NVO": {
+      "last": 43.17
+    },
+    "ETHA": {
+      "last": 18.65
+    },
+    "NOK": {
+      "last": 9.96
+    }
+  }
+}

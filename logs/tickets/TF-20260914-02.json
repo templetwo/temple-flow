@@ -1,0 +1,40 @@
+{
+  "ticket_id": "TF-20260914-02",
+  "created_at_utc": "2026-09-14T11:43:33Z",
+  "created_at_et": "2026-09-14 ~07:43 ET",
+  "desk": "Funds-beast + Risk Manager",
+  "lane": "entry",
+  "mv_session": "DISARMED",
+  "mode": "live",
+  "status": "SUPERSEDED_by_TF-20260915-01",
+  "symbol": "IBIT",
+  "depends_on": "TF-20260914-01 NVO flat",
+  "entry": {
+    "type": "limit",
+    "qty": 1,
+    "limit_max": 43.5,
+    "zone": [
+      42.8,
+      43.5
+    ],
+    "tif": "GTC",
+    "attached_stop": 41.2
+  },
+  "cap": 43.5,
+  "mark_note": "Mark ~44.05 through cap \u2014 do not chase / no replace-up",
+  "etha": "no_add",
+  "approvals": {
+    "human_phrase_required": "approve TF-20260914-02",
+    "or": "arm MV session",
+    "human_approved": true,
+    "window_minutes": 30,
+    "approved_at_et": "2026-09-14 16:36 ET",
+    "approved_phrase": "approve TF-20260914-02"
+  },
+  "execution": {
+    "sent": false,
+    "blocked_on": "NVO flat",
+    "approved_at_et": "2026-09-14 16:36 ET"
+  },
+  "note": "APPROVED ~16:36 ET. Contingent \u2014 no send until NVO flat. | 2026-09-15 \u00a79: through-cap leave-GTC killed; deepen TF-20260915-01."
+}

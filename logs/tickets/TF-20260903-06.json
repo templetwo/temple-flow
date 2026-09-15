@@ -1,0 +1,23 @@
+{
+  "id": "TF-20260903-06",
+  "status": "rejected_duplicate_child_already_working",
+  "risk_stamped": true,
+  "approved_at_et": "2026-09-03 13:27 ET",
+  "approved_phrase": "approve TF-20260903-06",
+  "action": "place_protect_stop",
+  "symbol": "IBIT",
+  "side": "SELL",
+  "qty": 2,
+  "stop": 41.2,
+  "duration": "GTC",
+  "schwab_order_id": "1007820924294",
+  "execution": {
+    "http": 201,
+    "order_id": "1007820924294",
+    "final_status": "REJECTED",
+    "reject_reason": "oversold \u2014 child STOP 1007762031725 already WORKING @41.20",
+    "gap_closed_by": "1007762031725",
+    "do_not_retry": true,
+    "utc": "2026-09-03T17:29:57Z"
+  }
+}

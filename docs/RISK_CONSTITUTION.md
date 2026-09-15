@@ -28,7 +28,7 @@ This document is the single source of truth for the Temple Flow research-capital
 | Max position size | **18%** of current equity (**except Micro Velocity lane** — see below) |
 | Max daily loss | **4.5%** of equity → hard circuit breaker (all new risk halted until **human reset**) |
 | Max drawdown from peak equity | **18%** → full system halt + mandatory human review |
-| Maximum open positions | **4** |
+| Maximum open positions | **None (cash + Risk % gate)** — see AMENDMENTS_2026-09-15 §9; prior hard 4 / soft 3 superseded |
 | Volatility filter | Reduce size **50%** or skip when 14-period ATR **> 1.8×** 60-day average ATR |
 | Stops | **Hard stop-loss mandatory** on every live position |
 | Leverage | No leverage beyond cash-account limits under the above rules |
@@ -46,7 +46,7 @@ These replace all progressive capital tiers. Numbers may be tightened or loosene
 | --- | --- |
 | Lane | **Micro Velocity** agent only |
 | Change | **Max position size (18%) does NOT apply** to tickets sized for this lane |
-| Still bind | Max risk/trade **2.5%**; daily loss **4.5%**; peak drawdown **18%**; max opens **4**; ATR filter; hard stops; commission+slippage; **session arm** (see below) or per-ticket approve when disarmed |
+| Still bind | Max risk/trade **2.5%**; daily loss **4.5%**; peak drawdown **18%**; **no open-count ceiling** (cash + Risk %); ATR filter; hard stops; commission+slippage; **session arm** / desk-approve / per-ticket approve |
 | Who sizes | Risk Manager still finalizes live qty; Desk Lead does not size |
 | Scope | Only ideas/tickets marked Micro Velocity. Desk / Strategist / other lanes keep the **18%** cap |
 | Intent | Allow 1-share recovery vehicles (incl. IBIT/ETHA/FBTC when risk $ at stop clears 2.5%) on a micro book |

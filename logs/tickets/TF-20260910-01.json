@@ -1,0 +1,72 @@
+{
+  "ticket_id": "TF-20260910-01",
+  "created_at_utc": "2026-09-10T20:55:00Z",
+  "expires_at_utc": "2026-09-10T21:25:00Z",
+  "desk": "Funds-beast",
+  "lane": "protect",
+  "mv_session": "DISARMED",
+  "mode": "live",
+  "status": "risk_pass_awaiting_human",
+  "symbol": "IBIT",
+  "side": "sell",
+  "action": "protect_stop_first_sell",
+  "qty": 2,
+  "entry": {
+    "type": "stop",
+    "price": 41.2,
+    "tif": "GTC",
+    "instruction": "SELL STOP 2 IBIT @41.20 GTC. FIRST SELL only. Protect-only. Duplicate STOP 1007820924294 was REJECTED \u2014 do not retry that id. Child 1725 not present. No flatten/stack. One mutation."
+  },
+  "stop": 41.2,
+  "target": null,
+  "size": {
+    "qty": 2,
+    "notional_usd": 87.8,
+    "pct_equity": 14.78
+  },
+  "risk": {
+    "risk_usd": 5.44,
+    "risk_pct_equity": 0.92,
+    "risk_basis": "2 \u00d7 (fill 43.90 \u2212 stop 41.20 + slip 0.02)",
+    "r_multiple_to_target": null,
+    "commission_slippage_usd": 0.04,
+    "max_risk_usd": 14.85,
+    "atr_filter_triggered": false,
+    "constitution_checks": {
+      "max_risk_ok": true,
+      "max_position_ok": true,
+      "max_positions_ok": true,
+      "daily_loss_ok": true,
+      "drawdown_ok": true,
+      "hard_stop_present": true
+    }
+  },
+  "book": {
+    "as_of": "2026-09-10 ~16:55 ET live after re-auth",
+    "equity_usd": 594.18,
+    "peak_equity_usd": 602.47,
+    "cash_usd": 433.47,
+    "sod_usd": 595.95,
+    "open_positions": 4,
+    "ibit": {
+      "qty": 2,
+      "avg": 43.9,
+      "working_stop": false,
+      "duplicate_stop_rejected": "1007820924294",
+      "child_1725": "not_present"
+    },
+    "other_stops_pending_activation": [
+      "NVO 42.50 1723",
+      "ETHA 17.70 64203",
+      "NOK 9.45 7449"
+    ]
+  },
+  "one_sell": "PASS \u2014 no WORKING/PENDING IBIT stop in book; this is first sell only",
+  "approvals": {
+    "human_phrase_required": "approve TF-20260910-01",
+    "human_approved": false,
+    "window_minutes": 30
+  },
+  "execution": null,
+  "note": "Constitution gap until STOP WORKING. MV DISARMED. Soft after hours \u2014 GTC only."
+}

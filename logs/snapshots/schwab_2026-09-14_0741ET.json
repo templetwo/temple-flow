@@ -1,0 +1,104 @@
+{
+  "ts_et": "2026-09-14T07:41:34.045773-04:00",
+  "source": "mac spiral-broker run_snapshot.sh child-flattened GET",
+  "mv": "DISARMED",
+  "book": {
+    "equity": 594.17,
+    "cash": 433.47,
+    "avail": 433.47,
+    "bp": 433.47,
+    "lmv": 160.7,
+    "sod": 594.37,
+    "positions": [
+      {
+        "symbol": "IBIT",
+        "qty": 2.0,
+        "avg": 43.9,
+        "mv": 88.1,
+        "dayPL": 0.56
+      },
+      {
+        "symbol": "NVO",
+        "qty": 1.0,
+        "avg": 38.92,
+        "mv": 43.54,
+        "dayPL": 0.47
+      },
+      {
+        "symbol": "ETHA",
+        "qty": 1.0,
+        "avg": 18.75,
+        "mv": 18.95,
+        "dayPL": -0.21
+      },
+      {
+        "symbol": "NOK",
+        "qty": 1.0,
+        "avg": 9.97,
+        "mv": 10.11,
+        "dayPL": -1.02
+      }
+    ]
+  },
+  "orders": [
+    {
+      "id": 1007762031725,
+      "status": "WORKING",
+      "type": "STOP",
+      "stopPrice": 41.2,
+      "remaining": 2.0,
+      "symbol": "IBIT"
+    },
+    {
+      "id": 1007762031723,
+      "status": "WORKING",
+      "type": "STOP",
+      "stopPrice": 42.5,
+      "remaining": 1.0,
+      "symbol": "NVO"
+    },
+    {
+      "id": 1007757064203,
+      "status": "WORKING",
+      "type": "STOP",
+      "stopPrice": 17.7,
+      "remaining": 1.0,
+      "symbol": "ETHA"
+    },
+    {
+      "id": 1007691287449,
+      "status": "WORKING",
+      "type": "STOP",
+      "stopPrice": 9.45,
+      "remaining": 1.0,
+      "symbol": "NOK"
+    }
+  ],
+  "quotes": {
+    "ETHA": {
+      "last": 18.95,
+      "mark": 18.95
+    },
+    "IBIT": {
+      "last": 44.06,
+      "mark": 44.05
+    },
+    "NVO": {
+      "last": 43.56,
+      "mark": 43.54
+    },
+    "NOK": {
+      "last": 10.1,
+      "mark": 10.11
+    },
+    "FBTC": {
+      "last": 67.66,
+      "mark": 67.67
+    }
+  },
+  "peak": 602.47,
+  "dd": 8.3,
+  "dd_pct": 1.3777,
+  "dayPL": -0.2,
+  "dayPL_pct": -0.0336
+}

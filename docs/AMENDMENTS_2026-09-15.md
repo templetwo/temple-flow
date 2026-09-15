@@ -91,9 +91,9 @@ Funds-beast may:
 - Issue `arm MV session` / `disarm MV session` in Execution chat
 - Drive Risk-PASS **MV-lane** tickets under an armed session until 16:00 / disarm / breaker
 
-Still binds: soft max 3 opens, Risk PASS only, one-sell, no through-cap chase, ETHA+IBIT live universe, FOMC/CPI hard-hold when Desk Lead flags it.
+Still binds: Risk PASS only, one-sell, no through-cap chase, ETHA+IBIT live universe, FOMC/CPI hard-hold when Desk Lead flags it. Open-count ceiling removed by §9 (cash + Risk % gate).
 
-Do not arm while opens=4 with no free slot. Prefer arm after a recycle frees capacity and cash/equity >20%.
+Arm when cash/equity >20% and a Risk-PASS MV ticket fits (open count is not a gate under §9). Leftover recycle still useful for concentrating capital, not required before arm.
 
 ---
 

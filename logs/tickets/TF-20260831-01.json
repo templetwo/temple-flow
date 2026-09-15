@@ -1,0 +1,74 @@
+{
+  "ticket_id": "TF-20260831-01",
+  "created_at_utc": "2026-08-31T13:50:00Z",
+  "expires_at_utc": "2026-08-31T14:20:00Z",
+  "desk": "Funds-beast",
+  "lane": "human_override_one_off",
+  "universe": "NOT_AN_EXPANSION \u2014 ETHA+IBIT remain the live universe; SOFI is one ticket only",
+  "mv_session": "ARMED_does_not_cover_SOFI",
+  "mode": "live",
+  "status": "risk_pass_contingent_awaiting_human",
+  "symbol": "SOFI",
+  "side": "buy",
+  "qty": 6,
+  "entry": {
+    "type": "limit",
+    "price": 17.66,
+    "zone_low": 17.65,
+    "zone_high": 17.66,
+    "cap": 17.7,
+    "tif": "GTC",
+    "mark": 17.65,
+    "ask": 17.66,
+    "session_high": 17.93,
+    "instruction": "BUY 6 SOFI GTC LIMIT 17.66 (cap 17.70) WITH ATTACHED STOP 16.80. No DAY. No chase 17.93. One mutation. PRECONDITION: cancel IBIT parent 1007762031724 first \u2014 SOFI fill + IBIT fill = 5/4 opens."
+  },
+  "stop": 16.8,
+  "target": null,
+  "size": {
+    "qty": 6,
+    "notional_usd": 106.2,
+    "pct_equity": 17.85
+  },
+  "risk": {
+    "risk_usd": 5.52,
+    "risk_pct_equity": 0.93,
+    "risk_basis": "qty 6 \u00d7 (cap 17.70 \u2212 stop 16.80 + slip 0.02)",
+    "r_multiple_to_target": null,
+    "commission_slippage_usd": 0.12,
+    "max_risk_usd": 14.87,
+    "stop_source": "Risk-set \u2014 no Strategist stop on pack; ~5% below 17.65 / below session 17.60. Not a technical package.",
+    "atr_14": null,
+    "atr_60d_avg": null,
+    "atr_filter_triggered": false,
+    "atr_note": "incomplete \u2014 no SOFI ATR in store",
+    "constitution_checks": {
+      "max_risk_ok": true,
+      "max_position_ok": true,
+      "max_positions_ok": false,
+      "max_positions_note": "PASS only after IBIT 1007762031724 cancelled. Else 5/4 on dual fill.",
+      "daily_loss_ok": true,
+      "drawdown_ok": true,
+      "hard_stop_present": true
+    }
+  },
+  "book": {
+    "equity_usd": 594.95,
+    "peak_equity_usd": 596.86,
+    "cash_usd": 521.27,
+    "sod_usd": 595.46,
+    "open_positions_before": 3,
+    "open_positions_after_if_ibit_cancelled": 4,
+    "funding_check": "PASS cash 521.27 >= 106.20",
+    "daily_pnl_usd": -0.51
+  },
+  "precondition": "CANCEL IBIT BUY 2 @43.90 GTC 1007762031724 before sending SOFI. Max 4 opens is binding.",
+  "authorization": "NON-MV. MV arm does not authorize. Exact phrase: approve TF-20260831-01. 30m window.",
+  "approvals": {
+    "human_phrase_required": "approve TF-20260831-01",
+    "human_approved": false,
+    "window_minutes": 30
+  },
+  "execution": null,
+  "note": "Human override 2026-08-31 ~09:50 ET. Not a universe expansion. No F/AAL. No ETHA add."
+}

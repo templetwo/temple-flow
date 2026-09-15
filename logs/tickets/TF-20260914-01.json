@@ -1,0 +1,47 @@
+{
+  "ticket_id": "TF-20260914-01",
+  "created_at_utc": "2026-09-14T11:43:33Z",
+  "created_at_et": "2026-09-14 ~07:43 ET",
+  "desk": "Funds-beast + Risk Manager",
+  "lane": "protect_recycle",
+  "mv_session": "DISARMED",
+  "mode": "live",
+  "status": "human_approved_queued_next_rth",
+  "symbol": "NVO",
+  "rth_only": true,
+  "sequence": [
+    {
+      "op": "cancel_by_id",
+      "order_id": "1007762031723",
+      "note": "NVO stop \u2014 no AH cancel"
+    },
+    {
+      "op": "place_oco",
+      "qty": 1,
+      "limit": 45.0,
+      "stop": 42.5,
+      "side": "SELL",
+      "tif": "GTC",
+      "note": "ONE OCO LIMIT 45 XOR STOP 42.50 after cancel"
+    }
+  ],
+  "approvals": {
+    "human_phrase_required": "approve TF-20260914-01",
+    "human_approved": true,
+    "window_minutes": 30,
+    "approved_at_et": "2026-09-14 16:36 ET",
+    "approved_phrase": "approve TF-20260914-01"
+  },
+  "constraints": {
+    "no_ah_cancel": true,
+    "no_second_sell_while_stop_owns": true,
+    "one_mutation_oco_after_cancel": true
+  },
+  "execution": {
+    "sent": false,
+    "queued": "next_RTH",
+    "reason": "no_AH_cancel",
+    "approved_at_et": "2026-09-14 16:36 ET"
+  },
+  "note": "APPROVED ~16:36 ET. Queued next RTH only \u2014 no AH cancel."
+}

@@ -1,0 +1,42 @@
+{
+  "ticket_id": "TF-20260915-01",
+  "created_at_utc": "2026-09-15T10:41:03Z",
+  "created_at_et": "2026-09-15 ~06:40 ET",
+  "desk": "Risk Manager",
+  "lane": "MV",
+  "mv_session": "ARMED",
+  "mode": "live",
+  "status": "desk_approved_mv_armed",
+  "symbol": "IBIT",
+  "side": "buy",
+  "qty": 1,
+  "entry": {
+    "type": "limit",
+    "price": 43.23,
+    "tif": "GTC",
+    "attached_stop": 41.2
+  },
+  "stop": 41.2,
+  "supersedes": "TF-20260914-02 contingent leave-GTC",
+  "approvals": {
+    "desk_phrase_required": "approve TF-20260915-01",
+    "also_requires": "arm MV session",
+    "human_approved": false,
+    "desk_approved": true,
+    "approved_by": "desk_lead",
+    "approved_phrase": "approve TF-20260915-01",
+    "approved_at_utc": "2026-09-15T10:42:29Z",
+    "mv_armed": true,
+    "human_phrase_required": "approve TF-20260915-01",
+    "desk_may_approve": true
+  },
+  "constraints": {
+    "no_chase": true,
+    "cash_risk_gate": true,
+    "no_open_count_refuse": true
+  },
+  "execution": {
+    "path": "MV armed \u2014 Execution send when RTH/gates allow"
+  },
+  "note": " | Desk-approved + arm MV session ~06:42 ET 2026-09-15."
+}
