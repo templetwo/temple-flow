@@ -8,7 +8,7 @@ Problem this fixes: book sat **4/4** with **~$433 cash (~70%+ of equity)** idle 
 
 ---
 
-## 1. Soft max opens = 3 (hard cap still 4)
+## 1. Soft max opens = 3 (hard cap still 4) — **SUPERSEDED by §9**
 
 Hard constitution max **4** stays. Operating target is **≤3** opens so **one slot + cash** stay free for ETHA/IBIT velocity.
 
@@ -94,3 +94,24 @@ Funds-beast may:
 Still binds: soft max 3 opens, Risk PASS only, one-sell, no through-cap chase, ETHA+IBIT live universe, FOMC/CPI hard-hold when Desk Lead flags it.
 
 Do not arm while opens=4 with no free slot. Prefer arm after a recycle frees capacity and cash/equity >20%.
+
+---
+
+## 9. No open-count cap — cash is the gate (2026-09-15)
+
+**Authority:** Anthony (2026-09-15 ~06:39 ET): “there is no reason we cant maximize the use of the availible cash. no cap! the cap is when we have no more cash to invest” (widget on hard-max options dismissed; this is the binding instruction).  
+**Status:** LAW. Supersedes soft-max-3 / hard-max-4 **as a name-count ceiling**.
+
+**Removed as a hard stop:** max open positions = 4 (and soft max 3 as an operating ceiling).
+
+**Still bind (unchanged Risk box):**
+- Max risk per trade 2.5% of live equity
+- Max position size 18% of live equity
+- Max daily loss 4.5% breaker
+- Max peak drawdown 18%
+- Hard stop mandatory; ATR filter; one-sell; ETHA+IBIT live entries; leftover recycle SLA still useful for velocity, not required to free a “slot”
+- Desk-approve Risk-PASS (§7); Desk MV authority (§8)
+
+**Operating rule:** If cash remains and a Risk-PASS ticket fits the Risk box, Desk may approve / arm-MV send it. Do not refuse solely because opens ≥ 3 or ≥ 4. Prefer concentrating in thesis names (ETHA/IBIT) over spreading into new universe without Anthony.
+
+**Implication for today:** After or even before NVO recycle completes, Desk may arm MV and deploy idle cash into IBIT Risk-PASS without waiting for opens &lt; 4.
