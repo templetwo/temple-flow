@@ -79,3 +79,18 @@ Still human-only (Anthony):
 - Expanding universe or changing Risk % numbers
 
 Audit: Desk Lead logs every desk-approve in Helix + ticket file with `approved_by: desk_lead` and UTC. Execution treats desk-approve as human auth for PASS only.
+
+---
+
+## 8. Desk MV session authority (2026-09-15)
+
+**Authority:** Anthony: “i approve you to be make execution calls on MV session issues” (2026-09-15 ~06:36 ET).  
+**Status:** LAW until revoke (`desk may not run MV` or `disarm MV session` + explicit revoke).
+
+Funds-beast may:
+- Issue `arm MV session` / `disarm MV session` in Execution chat
+- Drive Risk-PASS **MV-lane** tickets under an armed session until 16:00 / disarm / breaker
+
+Still binds: soft max 3 opens, Risk PASS only, one-sell, no through-cap chase, ETHA+IBIT live universe, FOMC/CPI hard-hold when Desk Lead flags it.
+
+Do not arm while opens=4 with no free slot. Prefer arm after a recycle frees capacity and cash/equity >20%.
