@@ -61,3 +61,21 @@ Add: **cash/equity ≤ 25%** by end of any full RTH week unless Desk Lead logged
 
 Already approved: Tue RTH `TF-20260914-01` NVO recycle → contingent `TF-20260914-02` IBIT under 43.50.  
 If IBIT still through cap after NVO flat → Risk failover same day (amendment §4), not another quiet week.
+
+---
+
+## 7. Desk-approve standing delegation (2026-09-15)
+
+**Authority:** Anthony exact phrase `desk may approve Risk-PASS tickets` (2026-09-15 ~06:33 ET).  
+**Status:** LAW until revoke phrase `desk may not approve`.
+
+Funds-beast (Desk Lead) may issue exact `approve TF-YYYYMMDD-XX` to Execution for tickets Risk has marked **PASS**.
+
+Still human-only (Anthony):
+- Risk **VETO**
+- Through Risk-cap chase / replace-up
+- New universe names outside ETHA/IBIT live + leftover protect/recycle
+- Circuit breaker reset
+- Expanding universe or changing Risk % numbers
+
+Audit: Desk Lead logs every desk-approve in Helix + ticket file with `approved_by: desk_lead` and UTC. Execution treats desk-approve as human auth for PASS only.
