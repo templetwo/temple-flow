@@ -1,0 +1,495 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "campaign_id",
+    "revision",
+    "definition_state",
+    "mode",
+    "purpose",
+    "economic_evidence",
+    "profile",
+    "total_allocation_loss_accepted",
+    "capital_floor_usd",
+    "capital",
+    "objective",
+    "execution",
+    "optional_limits",
+    "activation"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "campaign.v2"
+    },
+    "campaign_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "definition_state": {
+      "enum": [
+        "draft",
+        "prepared"
+      ]
+    },
+    "mode": {
+      "enum": [
+        "paper",
+        "live"
+      ]
+    },
+    "purpose": {
+      "type": "string",
+      "minLength": 1
+    },
+    "economic_evidence": {
+      "enum": [
+        "VALIDATED_RESEARCH",
+        "EXPERIMENTAL_UNPROVEN"
+      ]
+    },
+    "profile": {
+      "enum": [
+        "full_loss_research",
+        "bounded_loss"
+      ]
+    },
+    "total_allocation_loss_accepted": {
+      "type": "boolean"
+    },
+    "capital_floor_usd": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$"
+    },
+    "capital": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "adoption_mode",
+        "snapshot_id",
+        "basis_net_usd",
+        "venues",
+        "allow_future_deposits",
+        "compound_realized_gains"
+      ],
+      "properties": {
+        "adoption_mode": {
+          "const": "snapshot_at_go"
+        },
+        "snapshot_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "basis_net_usd": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "venues": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "venue",
+              "account_alias",
+              "allocation_usd",
+              "positions_snapshot_id",
+              "eligibility_policy_id"
+            ],
+            "properties": {
+              "venue": {
+                "enum": [
+                  "schwab",
+                  "kraken_spot"
+                ]
+              },
+              "account_alias": {
+                "type": "string",
+                "minLength": 1
+              },
+              "allocation_usd": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "positions_snapshot_id": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "minLength": 1
+              },
+              "eligibility_policy_id": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "minItems": 1
+        },
+        "allow_future_deposits": {
+          "const": false
+        },
+        "compound_realized_gains": {
+          "type": "boolean"
+        }
+      }
+    },
+    "objective": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "multiple",
+        "on_reach",
+        "success_basis",
+        "shortfall_action"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "net_return_multiple",
+            "none"
+          ]
+        },
+        "multiple": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "on_reach": {
+          "const": "stop_entries_and_exit_owned_positions"
+        },
+        "success_basis": {
+          "const": "reconciled_net_exit_value"
+        },
+        "shortfall_action": {
+          "const": "report_and_remain_stopped"
+        }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "borrow",
+        "short",
+        "auto_transfer",
+        "derivatives",
+        "per_trade_human_approval",
+        "native_protection_required",
+        "single_writer_per_account",
+        "continuous_kraken_eligibility",
+        "schwab_session_policy",
+        "sizing_policy_id",
+        "strategy_registry_id",
+        "parameter_envelope_id",
+        "emergency_exit_protocol_id",
+        "external_service_budget_id"
+      ],
+      "properties": {
+        "borrow": {
+          "const": false
+        },
+        "short": {
+          "const": false
+        },
+        "auto_transfer": {
+          "const": false
+        },
+        "derivatives": {
+          "const": false
+        },
+        "per_trade_human_approval": {
+          "const": false
+        },
+        "native_protection_required": {
+          "const": true
+        },
+        "single_writer_per_account": {
+          "const": true
+        },
+        "continuous_kraken_eligibility": {
+          "const": true
+        },
+        "schwab_session_policy": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sizing_policy_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "strategy_registry_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "parameter_envelope_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "emergency_exit_protocol_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "external_service_budget_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "optional_limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "per_position_risk",
+        "daily_loss",
+        "peak_drawdown",
+        "position_notional",
+        "ticket_notional",
+        "position_count"
+      ],
+      "properties": {
+        "per_position_risk": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "enabled",
+            "limit_fraction",
+            "reason"
+          ],
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "limit_fraction": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "daily_loss": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "enabled",
+            "limit_fraction",
+            "reason"
+          ],
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "limit_fraction": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "peak_drawdown": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "enabled",
+            "limit_fraction",
+            "reason"
+          ],
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "limit_fraction": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "position_notional": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "enabled",
+            "limit_fraction",
+            "reason"
+          ],
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "limit_fraction": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "ticket_notional": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "enabled",
+            "limit_fraction",
+            "reason"
+          ],
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "limit_fraction": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "position_count": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "enabled",
+            "limit_count",
+            "reason"
+          ],
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "limit_count": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 1
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    "activation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "grant_id",
+        "deployment_receipt_id",
+        "policy_digest"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "grant_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "deployment_receipt_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "policy_digest": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Temple Flow immutable campaign definition v2",
+  "$comment": "Definition only; runtime lifecycle, accepted principal and grant/revocation records are separate. Shape validation is not authorization. Monetary strings use explicit semantic Decimal validation."
+}

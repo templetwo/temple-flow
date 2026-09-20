@@ -1,0 +1,165 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "intent_id",
+    "client_order_id",
+    "campaign_id",
+    "campaign_revision",
+    "mode",
+    "venue",
+    "account_alias",
+    "instrument_id",
+    "side",
+    "purpose",
+    "quantity",
+    "limit_price",
+    "time_in_force",
+    "created_at",
+    "expires_at",
+    "policy_digest",
+    "grant_generation",
+    "account_state_version",
+    "strategy_version",
+    "fee_snapshot_id",
+    "market_snapshot_id",
+    "decision_id",
+    "reservation_id",
+    "max_quote_debit",
+    "protective_stop_price",
+    "exit_protocol_id"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "order_intent.v2"
+    },
+    "intent_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "client_order_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "campaign_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "campaign_revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "mode": {
+      "enum": [
+        "paper",
+        "live"
+      ]
+    },
+    "venue": {
+      "enum": [
+        "schwab",
+        "kraken_spot"
+      ]
+    },
+    "account_alias": {
+      "type": "string",
+      "minLength": 1
+    },
+    "instrument_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "side": {
+      "enum": [
+        "buy",
+        "sell"
+      ]
+    },
+    "purpose": {
+      "enum": [
+        "entry",
+        "exit"
+      ]
+    },
+    "quantity": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$"
+    },
+    "limit_price": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$"
+    },
+    "time_in_force": {
+      "enum": [
+        "GTC",
+        "DAY",
+        "IOC",
+        "GTD",
+        "FOK"
+      ]
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "policy_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "grant_generation": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "account_state_version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "strategy_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "fee_snapshot_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "market_snapshot_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "decision_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "reservation_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "max_quote_debit": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$"
+    },
+    "protective_stop_price": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "exit_protocol_id": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Temple Flow entry or close intent v2",
+  "$comment": "This contract covers limit-priced entry/exit intents. Cancel/amend/protection commands use qualified adapter contracts to implement; they are not represented as new independent entries. Identifiers do not prove authorization."
+}

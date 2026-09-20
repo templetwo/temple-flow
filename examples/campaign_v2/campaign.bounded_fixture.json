@@ -1,0 +1,89 @@
+{
+  "schema_version": "campaign.v2",
+  "campaign_id": "TF-CAMPAIGN-BOUNDED-FIXTURE",
+  "revision": 1,
+  "definition_state": "prepared",
+  "mode": "paper",
+  "purpose": "FICTIONAL alternative profile for testing configuration; not a recommended allocation or risk percentage",
+  "economic_evidence": "EXPERIMENTAL_UNPROVEN",
+  "profile": "bounded_loss",
+  "total_allocation_loss_accepted": false,
+  "capital_floor_usd": "70",
+  "capital": {
+    "adoption_mode": "snapshot_at_go",
+    "snapshot_id": "fixture-snapshot-001",
+    "basis_net_usd": "100",
+    "venues": [
+      {
+        "venue": "kraken_spot",
+        "account_alias": "PAPER_KRAKEN",
+        "allocation_usd": "100",
+        "positions_snapshot_id": "fixture-empty-positions",
+        "eligibility_policy_id": "fixture-usd-spot-long-flat"
+      }
+    ],
+    "allow_future_deposits": false,
+    "compound_realized_gains": true
+  },
+  "objective": {
+    "kind": "net_return_multiple",
+    "multiple": "2",
+    "on_reach": "stop_entries_and_exit_owned_positions",
+    "success_basis": "reconciled_net_exit_value",
+    "shortfall_action": "report_and_remain_stopped"
+  },
+  "execution": {
+    "borrow": false,
+    "short": false,
+    "auto_transfer": false,
+    "derivatives": false,
+    "per_trade_human_approval": false,
+    "native_protection_required": true,
+    "single_writer_per_account": true,
+    "continuous_kraken_eligibility": true,
+    "schwab_session_policy": "verified_route_and_account_sessions",
+    "sizing_policy_id": "fixture-funded-sizing-v1",
+    "strategy_registry_id": "fixture-registry-v1",
+    "parameter_envelope_id": "fixture-envelope-v1",
+    "emergency_exit_protocol_id": "fixture-exit-protocol",
+    "external_service_budget_id": "fixture-zero-external-service-spend"
+  },
+  "optional_limits": {
+    "per_position_risk": {
+      "enabled": false,
+      "limit_fraction": null,
+      "reason": "Explicit full-loss research selection; no inherited percentage"
+    },
+    "daily_loss": {
+      "enabled": true,
+      "limit_fraction": "0.04",
+      "reason": "Test fixture selected check, not new universal policy"
+    },
+    "peak_drawdown": {
+      "enabled": false,
+      "limit_fraction": null,
+      "reason": "Explicit full-loss research selection; no inherited percentage"
+    },
+    "position_notional": {
+      "enabled": false,
+      "limit_fraction": null,
+      "reason": "Explicit full-loss research selection; no inherited percentage"
+    },
+    "ticket_notional": {
+      "enabled": false,
+      "limit_fraction": null,
+      "reason": "Explicit full-loss research selection; no inherited percentage"
+    },
+    "position_count": {
+      "enabled": false,
+      "limit_count": null,
+      "reason": "Funded resources and venue capacities, not a name-count ceiling"
+    }
+  },
+  "activation": {
+    "enabled": false,
+    "grant_id": null,
+    "deployment_receipt_id": null,
+    "policy_digest": null
+  }
+}

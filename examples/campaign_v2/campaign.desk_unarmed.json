@@ -1,0 +1,96 @@
+{
+  "schema_version": "campaign.v2",
+  "campaign_id": "TF-CAMPAIGN-DESK-DRAFT",
+  "revision": 1,
+  "definition_state": "draft",
+  "mode": "live",
+  "purpose": "Unarmed planning template for the two existing research accounts. $432 is reported cash, not a snapshotted allocation or combined equity.",
+  "economic_evidence": "EXPERIMENTAL_UNPROVEN",
+  "profile": "full_loss_research",
+  "total_allocation_loss_accepted": true,
+  "capital_floor_usd": "0",
+  "capital": {
+    "adoption_mode": "snapshot_at_go",
+    "snapshot_id": null,
+    "basis_net_usd": null,
+    "venues": [
+      {
+        "venue": "schwab",
+        "account_alias": "SCHWAB_RESEARCH_TO_RESOLVE",
+        "allocation_usd": null,
+        "positions_snapshot_id": null,
+        "eligibility_policy_id": "cash-equity-unleveraged-etf-to-qualify"
+      },
+      {
+        "venue": "kraken_spot",
+        "account_alias": "KRAKEN_RESEARCH_TO_RESOLVE",
+        "allocation_usd": null,
+        "positions_snapshot_id": null,
+        "eligibility_policy_id": "accessible-usd-spot-to-qualify"
+      }
+    ],
+    "allow_future_deposits": false,
+    "compound_realized_gains": true
+  },
+  "objective": {
+    "kind": "none",
+    "multiple": null,
+    "on_reach": "stop_entries_and_exit_owned_positions",
+    "success_basis": "reconciled_net_exit_value",
+    "shortfall_action": "report_and_remain_stopped"
+  },
+  "execution": {
+    "borrow": false,
+    "short": false,
+    "auto_transfer": false,
+    "derivatives": false,
+    "per_trade_human_approval": false,
+    "native_protection_required": true,
+    "single_writer_per_account": true,
+    "continuous_kraken_eligibility": true,
+    "schwab_session_policy": "verified_route_and_account_sessions",
+    "sizing_policy_id": "UNRESOLVED_sizing_policy_id",
+    "strategy_registry_id": "UNRESOLVED_strategy_registry_id",
+    "parameter_envelope_id": "UNRESOLVED_parameter_envelope_id",
+    "emergency_exit_protocol_id": "UNRESOLVED_emergency_exit_protocol_id",
+    "external_service_budget_id": "UNRESOLVED_external_service_budget_id"
+  },
+  "optional_limits": {
+    "per_position_risk": {
+      "enabled": false,
+      "limit_fraction": null,
+      "reason": "Explicit full-loss research selection; no inherited percentage"
+    },
+    "daily_loss": {
+      "enabled": false,
+      "limit_fraction": null,
+      "reason": "Explicit full-loss research selection; no inherited percentage"
+    },
+    "peak_drawdown": {
+      "enabled": false,
+      "limit_fraction": null,
+      "reason": "Explicit full-loss research selection; no inherited percentage"
+    },
+    "position_notional": {
+      "enabled": false,
+      "limit_fraction": null,
+      "reason": "Explicit full-loss research selection; no inherited percentage"
+    },
+    "ticket_notional": {
+      "enabled": false,
+      "limit_fraction": null,
+      "reason": "Explicit full-loss research selection; no inherited percentage"
+    },
+    "position_count": {
+      "enabled": false,
+      "limit_count": null,
+      "reason": "Funded resources and venue capacities, not a name-count ceiling"
+    }
+  },
+  "activation": {
+    "enabled": false,
+    "grant_id": null,
+    "deployment_receipt_id": null,
+    "policy_digest": null
+  }
+}

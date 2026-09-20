@@ -1,0 +1,5 @@
+{
+  "profile": "bounded_loss",
+  "total_allocation_loss_accepted": false,
+  "note": "Limits must be explicit enabled objects; missing is invalid."
+}

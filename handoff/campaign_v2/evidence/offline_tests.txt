@@ -1,0 +1,55 @@
+test_all_examples_shape_and_semantics (test_contracts.ContractTests.test_all_examples_shape_and_semantics) ... ok
+test_bounded_profile_needs_actual_boundary (test_contracts.ContractTests.test_bounded_profile_needs_actual_boundary) ... ok
+test_buy_needs_protective_stop (test_contracts.ContractTests.test_buy_needs_protective_stop) ... ok
+test_decline_can_record_negative_edge (test_contracts.ContractTests.test_decline_can_record_negative_edge) ... ok
+test_disabled_rule_cannot_carry_hidden_limit (test_contracts.ContractTests.test_disabled_rule_cannot_carry_hidden_limit) ... ok
+test_duplicate_account_not_twice_the_capital (test_contracts.ContractTests.test_duplicate_account_not_twice_the_capital) ... ok
+test_enabled_flag_alone_is_insufficient (test_contracts.ContractTests.test_enabled_flag_alone_is_insufficient) ... ok
+test_enabled_rule_requires_number (test_contracts.ContractTests.test_enabled_rule_requires_number) ... ok
+test_entry_must_not_short (test_contracts.ContractTests.test_entry_must_not_short) ... ok
+test_every_campaign_example_is_unarmed (test_contracts.ContractTests.test_every_campaign_example_is_unarmed) ... ok
+test_fee_unknown_entry_pass_rejected (test_contracts.ContractTests.test_fee_unknown_entry_pass_rejected) ... ok
+test_float_quantity_rejected (test_contracts.ContractTests.test_float_quantity_rejected) ... ok
+test_full_loss_does_not_keep_four_name_cap (test_contracts.ContractTests.test_full_loss_does_not_keep_four_name_cap) ... ok
+test_full_loss_has_no_inherited_numeric_cap (test_contracts.ContractTests.test_full_loss_has_no_inherited_numeric_cap) ... ok
+test_full_loss_needs_explicit_consent (test_contracts.ContractTests.test_full_loss_needs_explicit_consent) ... ok
+test_intent_cannot_reserve_less_than_gross (test_contracts.ContractTests.test_intent_cannot_reserve_less_than_gross) ... ok
+test_intent_validity_cannot_run_backwards (test_contracts.ContractTests.test_intent_validity_cannot_run_backwards) ... ok
+test_long_stop_below_entry (test_contracts.ContractTests.test_long_stop_below_entry) ... ok
+test_missing_rule_not_permission (test_contracts.ContractTests.test_missing_rule_not_permission) ... ok
+test_mode_change_does_not_activate (test_contracts.ContractTests.test_mode_change_does_not_activate) ... ok
+test_negative_net_edge_entry_pass_rejected (test_contracts.ContractTests.test_negative_net_edge_entry_pass_rejected) ... ok
+test_no_automatic_future_deposits (test_contracts.ContractTests.test_no_automatic_future_deposits) ... ok
+test_no_borrowing (test_contracts.ContractTests.test_no_borrowing) ... ok
+test_none_objective_has_no_hidden_multiple (test_contracts.ContractTests.test_none_objective_has_no_hidden_multiple) ... ok
+test_pass_needs_cash (test_contracts.ContractTests.test_pass_needs_cash) ... ok
+test_prepared_needs_balance_snapshot (test_contracts.ContractTests.test_prepared_needs_balance_snapshot) ... ok
+test_schema_version_not_guessed (test_contracts.ContractTests.test_schema_version_not_guessed) ... ok
+test_sell_exit_contract_does_not_require_positive_entry_edge (test_contracts.ContractTests.test_sell_exit_contract_does_not_require_positive_entry_edge) ... ok
+test_sleeves_reconcile_to_starting_basis (test_contracts.ContractTests.test_sleeves_reconcile_to_starting_basis) ... ok
+test_target_is_not_one_or_less (test_contracts.ContractTests.test_target_is_not_one_or_less) ... ok
+test_unknown_field_rejected (test_contracts.ContractTests.test_unknown_field_rejected) ... ok
+test_zero_quantity_rejected (test_contracts.ContractTests.test_zero_quantity_rejected) ... ok
+test_deposit_not_profit (test_economic_arithmetic.ArithmeticTests.test_deposit_not_profit) ... ok
+test_equal_notional_maker_maker_fees (test_economic_arithmetic.ArithmeticTests.test_equal_notional_maker_maker_fees) ... ok
+test_equal_notional_maker_taker_fees (test_economic_arithmetic.ArithmeticTests.test_equal_notional_maker_taker_fees) ... ok
+test_equal_notional_taker_taker_fees (test_economic_arithmetic.ArithmeticTests.test_equal_notional_taker_taker_fees) ... ok
+test_fee_positive_control_can_be_net_gain (test_economic_arithmetic.ArithmeticTests.test_fee_positive_control_can_be_net_gain) ... ok
+test_fractional_quantity_not_equity_integer (test_economic_arithmetic.ArithmeticTests.test_fractional_quantity_not_equity_integer) ... ok
+test_funded_quantity_includes_fees_and_rounds_down (test_economic_arithmetic.ArithmeticTests.test_funded_quantity_includes_fees_and_rounds_down) ... ok
+test_gross_win_can_be_net_loss (test_economic_arithmetic.ArithmeticTests.test_gross_win_can_be_net_loss) ... ok
+test_invalid_decimal_inputs (test_economic_arithmetic.ArithmeticTests.test_invalid_decimal_inputs) ... ok
+test_profit_with_external_cash_flow (test_economic_arithmetic.ArithmeticTests.test_profit_with_external_cash_flow) ... ok
+test_withdrawal_not_trading_loss (test_economic_arithmetic.ArithmeticTests.test_withdrawal_not_trading_loss) ... ok
+test_zero_cash_zero_quantity (test_economic_arithmetic.ArithmeticTests.test_zero_cash_zero_quantity) ... ok
+test_zero_price_not_infinite_size (test_economic_arithmetic.ArithmeticTests.test_zero_price_not_infinite_size) ... ok
+test_fill_identity_is_unique_per_account (test_ledger_ddl.DDLTests.test_fill_identity_is_unique_per_account) ... ok
+test_money_strings_survive_without_float_conversion (test_ledger_ddl.DDLTests.test_money_strings_survive_without_float_conversion) ... ok
+test_reservation_rolls_back_with_transaction (test_ledger_ddl.DDLTests.test_reservation_rolls_back_with_transaction) ... ok
+test_schema_foreign_keys_enabled (test_ledger_ddl.DDLTests.test_schema_foreign_keys_enabled) ... ok
+test_unknown_intent_reservation_rejected (test_ledger_ddl.DDLTests.test_unknown_intent_reservation_rejected) ... ok
+
+----------------------------------------------------------------------
+Ran 50 tests in 0.423s
+
+OK

@@ -1,0 +1,38 @@
+{
+  "profile": "full_loss_research",
+  "total_allocation_loss_accepted": true,
+  "capital_floor_usd": "0",
+  "optional_limits": {
+    "per_position_risk": {
+      "enabled": false,
+      "limit_fraction": null,
+      "reason": "Explicit full-loss research selection; no inherited percentage"
+    },
+    "daily_loss": {
+      "enabled": false,
+      "limit_fraction": null,
+      "reason": "Explicit full-loss research selection; no inherited percentage"
+    },
+    "peak_drawdown": {
+      "enabled": false,
+      "limit_fraction": null,
+      "reason": "Explicit full-loss research selection; no inherited percentage"
+    },
+    "position_notional": {
+      "enabled": false,
+      "limit_fraction": null,
+      "reason": "Explicit full-loss research selection; no inherited percentage"
+    },
+    "ticket_notional": {
+      "enabled": false,
+      "limit_fraction": null,
+      "reason": "Explicit full-loss research selection; no inherited percentage"
+    },
+    "position_count": {
+      "enabled": false,
+      "limit_count": null,
+      "reason": "Funded resources and venue capacities, not a name-count ceiling"
+    }
+  },
+  "note": "Explicit disablement of inherited percentage/count caps. Not a live grant."
+}

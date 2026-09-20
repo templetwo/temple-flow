@@ -1,0 +1,166 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "decision_id",
+    "campaign_id",
+    "campaign_revision",
+    "mode",
+    "venue",
+    "account_alias",
+    "candidate_id",
+    "result",
+    "reason_codes",
+    "policy_digest",
+    "account_state_version",
+    "fee_snapshot_id",
+    "market_snapshot_id",
+    "created_at",
+    "net_edge_usd_estimate",
+    "cash_required_usd",
+    "cash_available_usd",
+    "executable_quantity",
+    "evidence_refs",
+    "economic_evidence"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "decision.v2"
+    },
+    "decision_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "campaign_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "campaign_revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "mode": {
+      "enum": [
+        "paper",
+        "live"
+      ]
+    },
+    "venue": {
+      "enum": [
+        "schwab",
+        "kraken_spot"
+      ]
+    },
+    "account_alias": {
+      "type": "string",
+      "minLength": 1
+    },
+    "candidate_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "result": {
+      "enum": [
+        "PASS",
+        "DECLINE",
+        "DEFER"
+      ]
+    },
+    "reason_codes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "minItems": 1
+    },
+    "policy_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "account_state_version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "fee_snapshot_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "market_snapshot_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "net_edge_usd_estimate": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]+)?$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "cash_required_usd": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "cash_available_usd": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "executable_quantity": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "evidence_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "minItems": 1
+    },
+    "economic_evidence": {
+      "enum": [
+        "VALIDATED_RESEARCH",
+        "EXPERIMENTAL_UNPROVEN"
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Temple Flow deterministic entry decision v2",
+  "$comment": "PASS is data, not an exchange grant. Executor must resolve trusted decision/reservation identity and state versions at send time. Protective exits are not gated by positive expected entry edge."
+}

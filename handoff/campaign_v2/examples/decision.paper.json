@@ -1,0 +1,27 @@
+{
+  "schema_version": "decision.v2",
+  "decision_id": "fixture-decision-001",
+  "campaign_id": "TF-CAMPAIGN-PAPER-DEMO",
+  "campaign_revision": 1,
+  "mode": "paper",
+  "venue": "kraken_spot",
+  "account_alias": "PAPER_KRAKEN",
+  "candidate_id": "fixture-candidate-001",
+  "result": "PASS",
+  "reason_codes": [
+    "FIXTURE_NET_EDGE_AND_RESOURCES_PASS"
+  ],
+  "policy_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+  "account_state_version": 1,
+  "fee_snapshot_id": "fixture-fees",
+  "market_snapshot_id": "fixture-market",
+  "created_at": "2026-09-20T17:00:00Z",
+  "net_edge_usd_estimate": "0.5",
+  "cash_required_usd": "20.08",
+  "cash_available_usd": "100",
+  "executable_quantity": "2",
+  "evidence_refs": [
+    "fixture-only-not-broker-data"
+  ],
+  "economic_evidence": "EXPERIMENTAL_UNPROVEN"
+}

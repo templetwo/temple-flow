@@ -33,3 +33,8 @@ config/cancel_refusals.json
 logs/schwab_account_snapshot.json
 logs/schwab_oauth_reauth.log
 tf-actloop.patch
+
+# v2 campaign isolated runtime (never commit live grants or paper ledgers)
+config/campaigns/
+data/campaign_v2/
+.temple_flow_paper/

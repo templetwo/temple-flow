@@ -1,0 +1,89 @@
+{
+  "template_only": true,
+  "venue": "TO_RESOLVE",
+  "account_alias": "TO_RESOLVE",
+  "revision": null,
+  "checked_at": null,
+  "source_refs": [],
+  "qualifications": [
+    {
+      "capability": "funded_cash_semantics",
+      "status": "UNVERIFIED",
+      "account_specific": true,
+      "evidence_ref": null
+    },
+    {
+      "capability": "settlement_reuse",
+      "status": "UNVERIFIED",
+      "account_specific": true,
+      "evidence_ref": null
+    },
+    {
+      "capability": "session_order_types",
+      "status": "UNVERIFIED",
+      "account_specific": true,
+      "evidence_ref": null
+    },
+    {
+      "capability": "fractional_or_lot_increment",
+      "status": "UNVERIFIED",
+      "account_specific": true,
+      "evidence_ref": null
+    },
+    {
+      "capability": "native_stop_on_entry",
+      "status": "UNVERIFIED",
+      "account_specific": true,
+      "evidence_ref": null
+    },
+    {
+      "capability": "partial_fill_protection",
+      "status": "UNVERIFIED",
+      "account_specific": true,
+      "evidence_ref": null
+    },
+    {
+      "capability": "scale_in_protection",
+      "status": "UNVERIFIED",
+      "account_specific": true,
+      "evidence_ref": null
+    },
+    {
+      "capability": "profit_exit_transition",
+      "status": "UNVERIFIED",
+      "account_specific": true,
+      "evidence_ref": null
+    },
+    {
+      "capability": "cancel_fill_race",
+      "status": "UNVERIFIED",
+      "account_specific": true,
+      "evidence_ref": null
+    },
+    {
+      "capability": "unknown_submission_reconciliation",
+      "status": "UNVERIFIED",
+      "account_specific": true,
+      "evidence_ref": null
+    },
+    {
+      "capability": "complete_open_order_discovery",
+      "status": "UNVERIFIED",
+      "account_specific": true,
+      "evidence_ref": null
+    },
+    {
+      "capability": "rate_governor",
+      "status": "UNVERIFIED",
+      "account_specific": true,
+      "evidence_ref": null
+    },
+    {
+      "capability": "writer_ownership",
+      "status": "UNVERIFIED",
+      "account_specific": true,
+      "evidence_ref": null
+    }
+  ],
+  "next_action": "Resolve from official documentation and qualified account reads; trading tests require a separately accepted live test campaign."
+}

@@ -1,0 +1,6 @@
+OK offline contract: campaign.bounded_fixture.json
+OK offline contract: campaign.desk_unarmed.json
+OK offline contract: campaign.paper_100_to_200.json
+OK offline contract: decision.paper.json
+OK offline contract: order_intent.paper.json
+5 examples validated; no authority issued and no network calls made.

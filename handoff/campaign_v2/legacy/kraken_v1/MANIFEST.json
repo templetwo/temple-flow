@@ -1,0 +1,16 @@
+{
+  "document_date": "2026-09-20",
+  "repository": "templetwo/temple-flow",
+  "inspected_commit": "a5aa41b337c5f7522770225fb9a74121a1150283",
+  "status": "proposal_only_not_implemented_or_authorized",
+  "files": {
+    "CRYPTO_VELOCITY_BOT_CARD_v1.md": {
+      "bytes": 5834,
+      "sha256": "776fe390dfb7e99a9baf57aa90cfb14e9545e7dec062acf409750403e7d5f556"
+    },
+    "TEMPLE_FLOW_KRAKEN_CRYPTO_VELOCITY_SPEC_v1.md": {
+      "bytes": 45940,
+      "sha256": "5266bec0cb3f228156fa200a810b847ae4c3867fabaa362824754673d86e8c10"
+    }
+  }
+}

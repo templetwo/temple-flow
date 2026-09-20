@@ -1,0 +1,255 @@
+{
+  "package": "Temple Flow Campaign Operating Model",
+  "version": "2.0",
+  "created_at_utc": "2026-09-20T17:45:37.527377+00:00",
+  "repository_baseline": "a5aa41b337c5f7522770225fb9a74121a1150283",
+  "status": "implementation handoff, not live authorization",
+  "legacy_original_zip_sha256": "877cd9a48852eb46919eb6aa3d7fec05fb9abce8d45831b81d276480a72d6b02",
+  "files": [
+    {
+      "path": "00_START_HERE_GROK.md",
+      "bytes": 5102,
+      "sha256": "4052ba3bd7465ea16c113c1fcf30dfd4ad36956daf0ecedf9ce9063239d2eab8"
+    },
+    {
+      "path": "01_IMPLEMENTATION_PLAN.md",
+      "bytes": 17700,
+      "sha256": "0074226e549367c62a26e3d992032bb98728fb450fd6f4f1362eeb72290e7220"
+    },
+    {
+      "path": "README.md",
+      "bytes": 1849,
+      "sha256": "935fbcab949f3ea777f10d38445589b868e2b8d9c1182e32ac3d24141b4761cd"
+    },
+    {
+      "path": "VERIFICATION.md",
+      "bytes": 3104,
+      "sha256": "277f6332270ede48e8ae7c124aacc4cdc81e6755cfbc7d18fd83929d5593fb5c"
+    },
+    {
+      "path": "bot_cards/00_SHARED_TEAM_CONTRACT.md",
+      "bytes": 1823,
+      "sha256": "a960a2048959f1de4f2cb158c364c61ff87831d2f1e2d0335b274535e3dcb392"
+    },
+    {
+      "path": "bot_cards/01_FUNDS_BEAST.md",
+      "bytes": 1674,
+      "sha256": "66d2a70d829f2a8a6622e48c08243285c0c25ea405ff00b70f37861987b77d33"
+    },
+    {
+      "path": "bot_cards/02_RISK_MANAGER.md",
+      "bytes": 1378,
+      "sha256": "caf1fddf11861fb03f4484f4aa81d3934584575b9ef6e0527768bcaa77a3ac5c"
+    },
+    {
+      "path": "bot_cards/03_EXECUTION.md",
+      "bytes": 1300,
+      "sha256": "a1abdacdab04f7775303ed72b86022140b8e497e3bc5a72c52775da33df0a118"
+    },
+    {
+      "path": "bot_cards/04_DATA_BACKFILL.md",
+      "bytes": 1060,
+      "sha256": "fb01ceedf62c1af47b8a1283b2ee76386fcda95cff182e5517bd02c0bcf62d18"
+    },
+    {
+      "path": "bot_cards/05_MARKET_TECHNICAL.md",
+      "bytes": 908,
+      "sha256": "08b7ae6a04d9546504b8c14fb8e655d802825411344928b42d40bfc19a2df9da"
+    },
+    {
+      "path": "bot_cards/06_MACRO_SENTIMENT.md",
+      "bytes": 947,
+      "sha256": "0c32dd77fab652daf73faa38661abee32de65cddedf3f3b7665d01338ddffee4"
+    },
+    {
+      "path": "bot_cards/07_STRATEGIST.md",
+      "bytes": 1140,
+      "sha256": "be630f4fd5f8c8f028816dd06cdfa121286329cd01ea5a0182597bee638037af"
+    },
+    {
+      "path": "bot_cards/08_MICRO_VELOCITY.md",
+      "bytes": 1106,
+      "sha256": "3383d25be4f58973351bd4169aee87b4fd8489ce7143c5e672fe85265bb460ed"
+    },
+    {
+      "path": "bot_cards/09_CRYPTO_VELOCITY.md",
+      "bytes": 1044,
+      "sha256": "519116ec9dcec85c7ed463477d2d23c7fb16bd49ffa9eda423541ed7fffe993f"
+    },
+    {
+      "path": "bot_cards/10_RESEARCH_DIGEST.md",
+      "bytes": 1151,
+      "sha256": "e9d18e6c5a12f02cb6db966538c6f7848f86388b0df50391a9483d234cf2b888"
+    },
+    {
+      "path": "contracts/README.md",
+      "bytes": 2243,
+      "sha256": "fc3d43fc8fd055d4a146fcd5e4f63fb780b47fb2320b28118cbd86e46a04e0f7"
+    },
+    {
+      "path": "contracts/campaign.v2.schema.json",
+      "bytes": 11684,
+      "sha256": "b18548391a6d1603fa8508ba7c7cd8c083215c91365b9d3be55a766aca799f15"
+    },
+    {
+      "path": "contracts/decision.v2.schema.json",
+      "bytes": 3299,
+      "sha256": "9bc111cad489856a7cd0c6a786b6b72cb2de9b8164c2864510f83ecefc52f9f8"
+    },
+    {
+      "path": "contracts/order_intent.v2.schema.json",
+      "bytes": 3349,
+      "sha256": "7ad83e4ae68c0b64f2415442aee641834267641b489b962233a0176caad40fd3"
+    },
+    {
+      "path": "docs/ACCEPTANCE_PLAN.md",
+      "bytes": 11595,
+      "sha256": "0e9284908f9cf08271b8aa7dcdaab9e95428098d1d081da6da9c1c33b939af8e"
+    },
+    {
+      "path": "docs/ALLOCATOR_REFERENCE.md",
+      "bytes": 4463,
+      "sha256": "8e75ff489679b337d6664ee2eb3893b22d8b155e55edbdb6ff728f14596286b6"
+    },
+    {
+      "path": "docs/BROKER_CAPABILITIES.md",
+      "bytes": 7792,
+      "sha256": "0de191fbf6963384c41c268785e88bf5f67e21dee8d5730b91dd9bdca1131531"
+    },
+    {
+      "path": "docs/CAMPAIGN_OPERATING_MODEL.md",
+      "bytes": 11813,
+      "sha256": "ff002c08b9e53a1dceba0471d67148a0a0fe95a2fb2d4334f67d488e2b6ef5d7"
+    },
+    {
+      "path": "docs/CAP_AND_GATE_AUDIT.md",
+      "bytes": 9712,
+      "sha256": "a6155e58cf08581ef847b1b278fa11f6a97240a6d6736903eacc94bd1287923c"
+    },
+    {
+      "path": "docs/EXECUTION_AND_ACCOUNTING.md",
+      "bytes": 11357,
+      "sha256": "bb007f8bb987f133a7556687fe2f080e9fc1fd8db39c15b24a52c5037c239a12"
+    },
+    {
+      "path": "docs/MIGRATION_AND_ROLLBACK.md",
+      "bytes": 5754,
+      "sha256": "819087b32da07cbd948ac6096f34022fa54760884dd23a710503460eb55f8c52"
+    },
+    {
+      "path": "docs/PROPOSED_CONSTITUTION_V2.md",
+      "bytes": 6110,
+      "sha256": "12a24488535b7f957782f8e94bb6b455b9f06e1f231447e8ecf0ae57eae1f829"
+    },
+    {
+      "path": "docs/SOURCES_AND_VERIFICATION.md",
+      "bytes": 7886,
+      "sha256": "2499b145aabad9c714981725e81a6b1cc787962ede2e6d34625792ca9c3592fc"
+    },
+    {
+      "path": "docs/SUPERSESSION_AND_DECISIONS.md",
+      "bytes": 3893,
+      "sha256": "7c2b50d325403f4769b836767defaa9f6e38b4397ff53029323bf2f09845e0bb"
+    },
+    {
+      "path": "evidence/example_validation.txt",
+      "bytes": 306,
+      "sha256": "85677c39b30f2a5e23e28aa41aa882f335c66f9bc3edf6a5cf69861f75aac925"
+    },
+    {
+      "path": "evidence/offline_tests.txt",
+      "bytes": 5819,
+      "sha256": "2b93036713fe9e20c75a3c7d5825dadd6afe77802fe71894f03663801865d1ea"
+    },
+    {
+      "path": "examples/campaign.bounded_fixture.json",
+      "bytes": 2907,
+      "sha256": "6278fb68df35bd73c8a85be3d1ff0835b67b682bfe263d80828f4048d957b9e5"
+    },
+    {
+      "path": "examples/campaign.desk_unarmed.json",
+      "bytes": 3196,
+      "sha256": "141c485d570fbe1649ab2e8cc755b9d8bf0f65da4b6d82004c97cec48c6c1abd"
+    },
+    {
+      "path": "examples/campaign.paper_100_to_200.json",
+      "bytes": 2888,
+      "sha256": "6775a791dbfeedfaf65ea31b42e86b84d96de402278219a327770611ddd0875b"
+    },
+    {
+      "path": "examples/decision.paper.json",
+      "bytes": 830,
+      "sha256": "7e3b05979b489db2262cfbd082b788c60b67555b47fe21447ff622cc4ba70ccd"
+    },
+    {
+      "path": "examples/order_intent.paper.json",
+      "bytes": 973,
+      "sha256": "7a1eb502750e22577c4adcbad237b817cc70338b981b6523bbf9cafc7848ad44"
+    },
+    {
+      "path": "legacy/Temple_Flow_Kraken_CV_Build_Packet_v1.zip",
+      "bytes": 21338,
+      "sha256": "877cd9a48852eb46919eb6aa3d7fec05fb9abce8d45831b81d276480a72d6b02"
+    },
+    {
+      "path": "legacy/kraken_v1/CRYPTO_VELOCITY_BOT_CARD_v1.md",
+      "bytes": 5834,
+      "sha256": "776fe390dfb7e99a9baf57aa90cfb14e9545e7dec062acf409750403e7d5f556"
+    },
+    {
+      "path": "legacy/kraken_v1/MANIFEST.json",
+      "bytes": 537,
+      "sha256": "d0391bd471fc0973d0be7950bcb6bc5bd34c85479ca1dab0872eed732492a04c"
+    },
+    {
+      "path": "legacy/kraken_v1/TEMPLE_FLOW_KRAKEN_CRYPTO_VELOCITY_SPEC_v1.md",
+      "bytes": 45940,
+      "sha256": "5266bec0cb3f228156fa200a810b847ae4c3867fabaa362824754673d86e8c10"
+    },
+    {
+      "path": "requirements-dev.txt",
+      "bytes": 22,
+      "sha256": "70e4ec314d807c868b4cdcbdb155c210c8539786c70ed9688e67d8016c5ca14d"
+    },
+    {
+      "path": "templates/CAMPAIGN_PREVIEW.md",
+      "bytes": 1537,
+      "sha256": "394b2f43c229cf8c9c1406e9a6a300eb4cbca263cd54b41b8a5827fc0add8efa"
+    },
+    {
+      "path": "templates/runtime_ledger.sql",
+      "bytes": 5704,
+      "sha256": "7c7ddb205f9592ceb0d0604cb9162cc77a043ac9ed6d00ca6d1582b670b1766a"
+    },
+    {
+      "path": "templates/venue_capability_record.json",
+      "bytes": 2236,
+      "sha256": "6f379676c82a96153855c4e4af3b8a655765b040f041a378c2368fecdad0240d"
+    },
+    {
+      "path": "tests/test_contracts.py",
+      "bytes": 5409,
+      "sha256": "a25016366882ecab1a7ef13ad9c066815f9acb6eb4abc48a7888b783971e7634"
+    },
+    {
+      "path": "tests/test_economic_arithmetic.py",
+      "bytes": 2187,
+      "sha256": "4114ef7efca221bc154b5e6f01777b6edba20f690fe48d3314932c67df194f5f"
+    },
+    {
+      "path": "tests/test_ledger_ddl.py",
+      "bytes": 2490,
+      "sha256": "0c4868d2006be7c1cdb1fc6414882b587aed6b57ea539d9e407f67e0f2c46672"
+    },
+    {
+      "path": "tools/contract_checks.py",
+      "bytes": 8516,
+      "sha256": "28ced86a1d64a1748bb46495a9d6f2f10473a64a834017babc6e501ed8d53fa8"
+    },
+    {
+      "path": "tools/verify_bundle.py",
+      "bytes": 2774,
+      "sha256": "7d443c7a8ab6d4038108667cf505298e6ff609dfd20d56f80ba60d4c03fb7128"
+    }
+  ]
+}
