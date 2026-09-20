@@ -52,6 +52,13 @@ def main(argv: list[str] | None = None) -> int:
     kcycle = sub.add_parser("kraken-cycle")
     kcycle.add_argument("--send", action="store_true", help="Submit PASS intents (live). Default is evaluate only.")
     kcycle.add_argument("--campaign", default=str(ROOT / "docs/campaign_v2/campaign.live.prepared.json"))
+    sub.add_parser("explain-cash")
+    sub.add_parser("attribution")
+    rec = sub.add_parser("reconcile")
+    rec.add_argument("--txid", action="append", default=[])
+    flat = sub.add_parser("flatten")
+    flat.add_argument("--venue", default="kraken_spot")
+    flat.add_argument("--send", action="store_true")
     args = p.parse_args(argv)
 
     if args.cmd == "snapshot":
@@ -128,6 +135,33 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(json.dumps(out, indent=2, default=str))
         return 0 if out.get("ok") else 2
+    if args.cmd == "explain-cash":
+        from temple_flow.reporting.cash import explain_kraken_cash
+
+        out = explain_kraken_cash()
+        print(json.dumps(out, indent=2, default=str))
+        return 0 if out.get("ok") else 2
+    if args.cmd == "attribution":
+        from temple_flow.reporting.attribution import kraken_nav
+
+        out = kraken_nav()
+        print(json.dumps(out, indent=2, default=str))
+        return 0 if out.get("ok") else 2
+    if args.cmd == "reconcile":
+        from temple_flow.execution.reconcile import reconcile_kraken
+
+        out = reconcile_kraken(Path(args.state), args.txid or ["OUNTNO-XBVAK-EPG6QI", "O55VHG-TY4DM-O3KIJT"])
+        print(json.dumps(out, indent=2, default=str))
+        return 0 if out.get("ok") else 2
+    if args.cmd == "flatten":
+        from temple_flow.execution.flatten import flatten_kraken
+
+        if args.venue != "kraken_spot":
+            print("flatten on this host is kraken_spot only", file=sys.stderr)
+            return 2
+        out = flatten_kraken(Path(args.state), send=args.send)
+        print(json.dumps(out, indent=2, default=str))
+        return 0
     if args.cmd == "claim-writer":
         lease = WriterLease(Path(args.state), args.venue, args.account)
         try:

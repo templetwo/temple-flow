@@ -14,7 +14,7 @@ This repo is the durable source of truth for:
 ## Core principles
 
 1. **One clear owner per outcome** — each bot has a single primary job, scope, never-do list, and approval boundary.
-2. **Human gate on capital** — every live order requires exact ticket-ID approval. No unsupervised sends.
+2. **Human gate on capital** — campaign GO is the grant. Kraken intents after GO do not use `approve TF-…`. Schwab Act on Studio still uses ticket IDs until cutover.
 3. **Fixed risk constitution** — day-one rules; no progressive tiers; agents cannot override.
 4. **Historical backfill first** — trend/regime/technicals start from multi-year cleaned data.
 5. **Full auditability** — signals, debates, risk decisions, and fills logged with provenance.
@@ -47,7 +47,10 @@ Schwab stays dark until `SCHWAB_ACCOUNT_HASH` is set. Paper digest is not live a
 
 ## Status
 
-- v2 campaign runtime on `feat/campaign-v2-wp0-wp2`
-- Grok Bot profiles in `bots/GROK_BOT_PROFILES.md`
-- Kraken keys: `~/spiral-broker/.env` (`KRAKEN_API_KEY`, `KRAKEN_API_SECRET`)
-- Mode: READ_ONLY / DISARMED until `desk go --live` and `claim-writer` for Kraken
+See [`docs/campaign_v2/STATUS.md`](docs/campaign_v2/STATUS.md).
+
+- `main` carries Kraken campaign v2 + Studio Schwab tickets
+- Grok Bot profiles: `bots/GROK_BOT_PROFILES.md`
+- Kraken on this MacBook: grant ENABLED, KeepAlive loop, XXBT + native stop
+- Schwab: not sent from this host (`SCHWAB_ACCOUNT_HASH` empty here)
+- Edge: `EXPERIMENTAL_UNPROVEN`. Tests ≠ profit.
