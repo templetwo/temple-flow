@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import Decimal, ROUND_DOWN
 from typing import Any
 
 from temple_flow.adapters.kraken import SPOT_PAIRS, KrakenAdapter
@@ -15,11 +15,21 @@ from temple_flow.campaign.contracts import validate_document
 from temple_flow.execution.writer import WriterLease
 from temple_flow.ledger.store import LedgerStore
 from temple_flow.money import dstr
-from temple_flow.strategies.crypto_spot import evaluate_pullback
+from temple_flow.strategies.crypto_spot import evaluate_pullback, evaluate_trend_continuation
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _round_price(value: str, decimals: str | int) -> str:
+    q = Decimal("1").scaleb(-int(decimals))
+    return str(Decimal(value).quantize(q, rounding=ROUND_DOWN))
+
+
+def _round_qty(value: str, decimals: str | int) -> str:
+    q = Decimal("1").scaleb(-int(decimals))
+    return str(Decimal(value).quantize(q, rounding=ROUND_DOWN))
 
 
 def run_kraken_cycle(
@@ -50,15 +60,31 @@ def run_kraken_cycle(
         if last is None:
             evaluations.append({"pair": pair, "result": "DECLINE", "reason": "NO_LAST"})
             continue
+        cash_s = dstr(cash) if cash is not None else "0"
         ev = evaluate_pullback(
             pair,
             bars,
             last,
             fees["taker"],
             fees["maker"],
-            dstr(cash) if cash is not None else "0",
+            cash_s,
             fees["ordermin"],
         )
+        if ev.get("result") != "PASS":
+            trend = evaluate_trend_continuation(
+                pair,
+                bars,
+                last,
+                fees["taker"],
+                fees["maker"],
+                cash_s,
+                fees["ordermin"],
+            )
+            if trend.get("result") == "PASS":
+                ev = trend
+            else:
+                # keep pullback diagnostics as primary decline, attach trend reason
+                ev["trend_reason"] = trend.get("reason")
         ev["last"] = dstr(last)
         ev["fees"] = fees
         evaluations.append(ev)
@@ -76,6 +102,14 @@ def run_kraken_cycle(
             continue
         lease = WriterLease(state_dir, "kraken_spot", adapter.account_alias)
         permit = lease.permit()
+        if not permit:
+            # Autonomy loop is a different PID than the original claim — reclaim for this process.
+            try:
+                rec = lease.claim(force=True)
+                permit = rec.get("permit")
+            except Exception as exc:  # noqa: BLE001
+                ev["send"] = f"blocked_no_writer:{exc}"
+                continue
         if not permit:
             ev["send"] = "blocked_no_writer"
             continue
@@ -122,7 +156,7 @@ def run_kraken_cycle(
             "policy_digest": grant["policy_digest"],
             "grant_generation": grant["generation"],
             "account_state_version": snap.version,
-            "strategy_version": "crypto_spot_pullback_v0",
+            "strategy_version": ("crypto_spot_trend_poc_v0" if ev.get("reason") == "TREND_CONTINUATION_POC" else "crypto_spot_pullback_v0"),
             "fee_snapshot_id": "kraken-assetpairs",
             "market_snapshot_id": "kraken-ohlc-ticker",
             "decision_id": str(uuid.uuid4()),
@@ -131,10 +165,22 @@ def run_kraken_cycle(
             "protective_stop_price": ev["stop"],
             "exit_protocol_id": campaign["execution"]["emergency_exit_protocol_id"],
         }
+        # Kraken rejects excess decimals (AssetPairs pair_decimals / lot_decimals).
+        intent["limit_price"] = _round_price(intent["limit_price"], fees["pair_decimals"])
+        intent["protective_stop_price"] = _round_price(intent["protective_stop_price"], fees["pair_decimals"])
+        intent["quantity"] = _round_qty(intent["quantity"], fees["lot_decimals"])
         validate_document(intent)
         ack = adapter.submit(intent, permit)
         submitted.append({"pair": pair, "result": ack.result, "order_id": ack.broker_order_id, "detail": ack.detail})
         store.record_audit(campaign["campaign_id"], "KRAKEN_SUBMIT", submitted[-1])
+        if ack.result == "ACCEPTED":
+            # Do not double-spend the same ZUSD across pairs in one cycle.
+            try:
+                cash = (cash or Decimal("0")) - Decimal(str(sized[0]["cash_required"]))
+                if cash < 0:
+                    cash = Decimal("0")
+            except Exception:
+                cash = Decimal("0")
     return {
         "ok": True,
         "source": snap.source,

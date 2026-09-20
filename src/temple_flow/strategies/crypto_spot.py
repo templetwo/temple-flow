@@ -84,3 +84,68 @@ def evaluate_pullback(
         "increment": ordermin if Decimal(ordermin) > 0 else "0.0001",
         "worst_entry": dstr(limit),
     }
+
+
+def evaluate_trend_continuation(
+    pair: str,
+    bars: list[list],
+    last: Decimal,
+    taker: str,
+    maker: str,
+    cash: str,
+    ordermin: str,
+) -> dict[str, Any]:
+    """POC uptrend entry when price is already above SMA20. EXPERIMENTAL_UNPROVEN.
+
+    Gate: SMA20 > SMA50 and last > SMA20. Stop = max(SMA20, last - 2*ATR).
+    Modeled exit = last + 1*ATR (fee-aware net must still be positive at ordermin probe).
+    """
+    closes = [Decimal(str(b[4])) for b in bars]
+    sma20 = _sma(closes, 20)
+    sma50 = _sma(closes, 50)
+    atr = _atr(bars, 14)
+    if sma20 is None or sma50 is None or atr is None:
+        return {"result": "DECLINE", "reason": "HISTORY_UNPROVEN", "pair": pair}
+    if not (sma20 > sma50 and last > sma20):
+        return {
+            "result": "DECLINE",
+            "reason": "NO_TREND_SETUP",
+            "pair": pair,
+            "sma20": dstr(sma20),
+            "sma50": dstr(sma50),
+            "last": dstr(last),
+        }
+    stop = max(sma20, last - (Decimal("2") * atr))
+    if stop <= 0 or stop >= last:
+        return {"result": "DECLINE", "reason": "STOP_INVALID", "pair": pair}
+    limit = last
+    target = last + atr
+    qty = Decimal(ordermin) if Decimal(ordermin) > 0 else Decimal("0.0001")
+    net = round_trip_net(dstr(qty), dstr(limit), dstr(target), taker, taker)
+    if net <= 0:
+        return {
+            "result": "DECLINE",
+            "reason": "NO_NET_EDGE",
+            "pair": pair,
+            "net": dstr(net),
+            "last": dstr(last),
+            "stop": dstr(stop),
+        }
+    return {
+        "result": "PASS",
+        "reason": "TREND_CONTINUATION_POC",
+        "pair": pair,
+        "quantity_hint": dstr(qty),
+        "limit": dstr(limit),
+        "stop": dstr(stop),
+        "modeled_exit": dstr(target),
+        "net": dstr(net),
+        "economic_evidence": "EXPERIMENTAL_UNPROVEN",
+        "weight": "1",
+        "entry_fee_fraction": taker,
+        "exit_fee_fraction": taker,
+        "increment": ordermin if Decimal(ordermin) > 0 else "0.0001",
+        "worst_entry": dstr(limit),
+        "sma20": dstr(sma20),
+        "sma50": dstr(sma50),
+    }
