@@ -21,7 +21,7 @@ class LedgerStore:
     def __init__(self, path: Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(self.path)
+        self.db = sqlite3.connect(self.path, timeout=30)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA foreign_keys = ON")
         existing = self.db.execute(
@@ -95,6 +95,7 @@ class LedgerStore:
         self.db.commit()
 
     def insert_grant(self, **kwargs: Any) -> None:
+        entry_permission = kwargs.pop("entry_permission", "DISARMED")
         self.db.execute(
             """INSERT INTO grants
                (grant_id, campaign_id, revision, principal_ref, accepted_digest,
@@ -105,9 +106,9 @@ class LedgerStore:
         )
         self.db.execute(
             """UPDATE campaign_runtime
-               SET lifecycle='RUNNING', entry_permission='ENABLED'
+               SET lifecycle='RUNNING', entry_permission=?
                WHERE campaign_id=?""",
-            (kwargs["campaign_id"],),
+            (entry_permission, kwargs["campaign_id"]),
         )
         self.db.commit()
 

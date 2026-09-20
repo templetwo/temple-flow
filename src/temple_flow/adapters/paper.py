@@ -5,7 +5,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Any
 
-from temple_flow.adapters.protocol import AccountSnapshot, CapabilitySnapshot, SubmitAck
+from temple_flow.adapters.protocol import AccountSnapshot, CapabilitySnapshot, Position, SubmitAck
 from temple_flow.money import dstr, entry_debit
 
 
@@ -51,11 +51,18 @@ class PaperBroker:
         return AccountSnapshot(
             venue=self.venue,
             account_alias=self.account_alias,
-            cash_available=self.cash,
-            positions=dict(self.positions),
-            working_orders=list(self.orders.values()),
-            version=self.version,
+            source="paper_fixture",
             as_of="1970-01-01T00:00:00Z",
+            version=self.version,
+            cash_available=self.cash,
+            equity=self.cash,
+            sod_equity=self.cash,
+            positions=[Position(symbol=s, qty=q) for s, q in self.positions.items()],
+            working_orders=[],
+            quotes={},
+            orders_ok=True,
+            quotes_ok=True,
+            note="FIXTURE_ONLY",
         )
 
     def _next_id(self, prefix: str) -> str:

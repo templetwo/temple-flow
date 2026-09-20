@@ -9,7 +9,7 @@ from typing import Any
 
 from temple_flow.adapters.paper import PaperBroker
 from temple_flow.campaign.authority import Authority
-from temple_flow.campaign.contracts import load_json
+from temple_flow.campaign.contracts import ContractError, load_json
 from temple_flow.campaign.policy import policy_digest
 from temple_flow.execution.engine import PaperEngine
 from temple_flow.ledger.store import LedgerStore
@@ -49,34 +49,57 @@ class Desk:
         )
         return prepared
 
-    def go(self, campaign_id: str, revision: int, digest: str) -> dict[str, Any]:
-        result = self.authority.go(campaign_id, revision, digest)
+    def go(
+        self,
+        campaign_id: str,
+        revision: int,
+        digest: str,
+        *,
+        allow_paper_fixture: bool = False,
+        live: bool = False,
+    ) -> dict[str, Any]:
+        result = self.authority.go(
+            campaign_id,
+            revision,
+            digest,
+            principal_ref="operator:local-paper" if allow_paper_fixture else "operator:live-first",
+            live=live,
+        )
         row = self.store.get_campaign_revision(campaign_id, revision)
         self._campaign = json.loads(row["definition_json"])
         self._grant = result
-        sleeve = self._campaign["capital"]["venues"][0]
-        cash = Decimal(sleeve["allocation_usd"])
-        self.store.set_cash(sleeve["venue"], sleeve["account_alias"], dstr(cash), "0")
-        self.store.insert_fee_snapshot(
-            {
-                "fee_snapshot_id": "fixture-fees",
-                "venue": sleeve["venue"],
-                "account_alias": sleeve["account_alias"],
-                "instrument_id": "FIXTURE/USD",
-                "maker_fraction_decimal": "0.004",
-                "taker_fraction_decimal": "0.004",
-                "as_of": "1970-01-01T00:00:00Z",
-                "source_ref": "paper",
-            }
-        )
-        self._broker = PaperBroker(
-            sleeve["venue"],
-            sleeve["account_alias"],
-            cash,
-            Decimal("0.004"),
-            Decimal("0.004"),
-        )
-        self._engine = PaperEngine(self.store, self._broker, self._campaign, result)
+        if self._campaign["mode"] == "paper":
+            if not allow_paper_fixture:
+                raise ContractError(
+                    "paper campaign is a test fixture only; live-first desk refuses it as product GO"
+                )
+            sleeve = self._campaign["capital"]["venues"][0]
+            cash = Decimal(sleeve["allocation_usd"])
+            self.store.set_cash(sleeve["venue"], sleeve["account_alias"], dstr(cash), "0")
+            self.store.insert_fee_snapshot(
+                {
+                    "fee_snapshot_id": "fixture-fees",
+                    "venue": sleeve["venue"],
+                    "account_alias": sleeve["account_alias"],
+                    "instrument_id": "FIXTURE/USD",
+                    "maker_fraction_decimal": "0.004",
+                    "taker_fraction_decimal": "0.004",
+                    "as_of": "1970-01-01T00:00:00Z",
+                    "source_ref": "paper",
+                }
+            )
+            self._broker = PaperBroker(
+                sleeve["venue"],
+                sleeve["account_alias"],
+                cash,
+                Decimal("0.004"),
+                Decimal("0.004"),
+            )
+            self._engine = PaperEngine(self.store, self._broker, self._campaign, result)
+            return result
+        # Live: do not invent cash. Service probe writes real balances if the read succeeded.
+        self._broker = None
+        self._engine = None
         return result
 
     def status(self) -> dict[str, Any]:
@@ -102,7 +125,12 @@ class Desk:
     def paper_cycle(self, campaign_path: Path) -> dict[str, Any]:
         prepared = self.prepare(campaign_path)
         campaign = prepared["campaign"]
-        go = self.go(campaign["campaign_id"], campaign["revision"], prepared["policy_digest"])
+        go = self.go(
+            campaign["campaign_id"],
+            campaign["revision"],
+            prepared["policy_digest"],
+            allow_paper_fixture=True,
+        )
         go2 = self.authority.go(campaign["campaign_id"], campaign["revision"], prepared["policy_digest"])
         engine = self._engine
         assert engine is not None

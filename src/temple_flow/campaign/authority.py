@@ -10,6 +10,9 @@ from typing import Any
 from temple_flow.campaign.contracts import ContractError, validate_document
 from temple_flow.campaign.policy import assert_profile_explicit, policy_digest
 
+# Paper fixture digest from WP2. Confers no live authority.
+PAPER_DIGEST = "34b384f85935f9083728b51a71d02379067c70034295541457cf4a1b2e517906"
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -44,6 +47,8 @@ class Authority:
         revision: int,
         expected_digest: str,
         principal_ref: str = "operator:local-paper",
+        *,
+        live: bool = False,
     ) -> dict[str, Any]:
         row = self.store.get_campaign_revision(campaign_id, revision)
         if row is None:
@@ -54,6 +59,13 @@ class Authority:
             raise ContractError("stale preview: digest mismatch")
         if digest != policy_digest(doc):
             raise ContractError("definition does not match stored digest")
+        if live:
+            if digest == PAPER_DIGEST:
+                raise ContractError("paper digest confers no live authority")
+            if doc.get("mode") != "live":
+                raise ContractError("live GO requires mode=live")
+            if str(doc.get("capital", {}).get("snapshot_id") or "").startswith("fixture"):
+                raise ContractError("live GO refuses fixture snapshots")
         assert_profile_explicit(doc)
         existing = self.store.get_active_grant(campaign_id)
         if existing is not None:
@@ -75,6 +87,7 @@ class Authority:
             accepted_digest=digest,
             generation=1,
             accepted_at=_now(),
+            entry_permission="ENABLED" if not live else "DISARMED",
         )
         armed = json.loads(json.dumps(doc))
         armed["activation"] = {
