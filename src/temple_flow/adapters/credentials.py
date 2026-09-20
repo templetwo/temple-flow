@@ -32,7 +32,7 @@ def load_env_files() -> dict[str, str]:
                 continue
             key, raw = line.split("=", 1)
             key = key.strip()
-            val = raw.strip().strip('"').strip("'")
+            val = raw.strip().strip('"').strip("'").strip()
             found.setdefault(key, val)
             os.environ.setdefault(key, val)
     return found

@@ -92,6 +92,31 @@ class NoPaperSubstitution(unittest.TestCase):
         svc.close()
         tmp.cleanup()
 
+    def test_kraken_private_posts_the_signed_body(self):
+        from temple_flow.adapters.kraken import KrakenAdapter
+
+        posted = {}
+
+        class FakeResp:
+            status_code = 200
+
+            def json(self):
+                return {"error": [], "result": {"ZUSD": "1"}}
+
+        def fake_post(url, headers=None, data=None, timeout=None):
+            posted["url"] = url
+            posted["data"] = data
+            posted["content_type"] = (headers or {}).get("Content-Type")
+            return FakeResp()
+
+        adapter = KrakenAdapter()
+        with patch.object(adapter, "_keys", return_value=("k" * 56, "c2VjcmV0c2VjcmV0c2VjcmV0c2VjcmV0c2VjcmV0c2VjcmV0c2VjcmV0c2VjcmV0")):
+            with patch("requests.post", fake_post):
+                adapter._private("/0/private/Balance")
+        self.assertIsInstance(posted["data"], str)
+        self.assertIn("nonce=", posted["data"])
+        self.assertEqual(posted["content_type"], "application/x-www-form-urlencoded")
+
     def test_kraken_missing_keys_are_unavailable(self):
         from temple_flow.adapters.kraken import KrakenAdapter
 

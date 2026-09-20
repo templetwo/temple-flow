@@ -73,6 +73,8 @@ class KrakenAdapter:
         import requests  # type: ignore
 
         api_key, api_secret = self._keys()
+        api_key = api_key.strip()
+        api_secret = "".join(api_secret.split())
         data = dict(data or {})
         data["nonce"] = str(int(time.time() * 1000))
         postdata = urllib.parse.urlencode(data)
@@ -82,12 +84,17 @@ class KrakenAdapter:
             secret = base64.b64decode(api_secret)
         except Exception as exc:
             raise VenueUnavailable("kraken: API secret is not valid base64") from exc
+        if not secret:
+            raise VenueUnavailable("kraken: API secret decoded empty")
         sig = hmac.new(secret, message, hashlib.sha512)
         headers = {
             "API-Key": api_key,
             "API-Sign": base64.b64encode(sig.digest()).decode(),
+            "Content-Type": "application/x-www-form-urlencoded",
         }
-        r = requests.post(PUBLIC + path, headers=headers, data=data, timeout=30)
+        # Body must be the exact string we signed. A dict here is a common
+        # EAPI:Invalid key: requests re-encodes and the signature misses.
+        r = requests.post(PUBLIC + path, headers=headers, data=postdata, timeout=30)
         if r.status_code != 200:
             raise VenueUnavailable(f"kraken: http={r.status_code}")
         body = r.json()

@@ -19,8 +19,8 @@ Seat: MacBook Pro (not Studio). Measured 2026-09-20. No live send. No `LIVE_OK`.
 
 - capability: `UNAVAILABLE`
 - source: none
-- unavailable: `kraken: missing KRAKEN_API_KEY,KRAKEN_API_SECRET`
-- Put them in `~/spiral-broker/.env` (see `CREDENTIALS.md`). Missing keys do not become paper cash.
+- `KRAKEN_API_KEY` and `KRAKEN_API_SECRET` are **present** in `~/spiral-broker/.env` (non-empty; values not logged).
+- Live read: `kraken: EAPI:Invalid key` (Kraken rejected the API key, not a missing-file). Secret base64-decodes. Key length 55 (Kraken keys are often 56). Re-copy the **public API key** from Kraken → API. Query Funds must be on. Do not paste keys into chat.
 
 ## Not compiled
 
