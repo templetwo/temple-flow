@@ -1,0 +1,89 @@
+{
+  "schema_version": "campaign.v2",
+  "campaign_id": "TF-CAMPAIGN-LIVE",
+  "revision": 1,
+  "definition_state": "prepared",
+  "mode": "live",
+  "purpose": "Live full-loss research campaign compiled from actual broker reads. Not the paper $100 fixture.",
+  "economic_evidence": "EXPERIMENTAL_UNPROVEN",
+  "profile": "full_loss_research",
+  "total_allocation_loss_accepted": true,
+  "capital_floor_usd": "0",
+  "capital": {
+    "adoption_mode": "snapshot_at_go",
+    "snapshot_id": "kraken_read:kraken_spot",
+    "basis_net_usd": "100",
+    "venues": [
+      {
+        "venue": "kraken_spot",
+        "account_alias": "KRAKEN_RESEARCH",
+        "allocation_usd": "100",
+        "positions_snapshot_id": "kraken_read:kraken_spot",
+        "eligibility_policy_id": "accessible-usd-spot"
+      }
+    ],
+    "allow_future_deposits": false,
+    "compound_realized_gains": true
+  },
+  "objective": {
+    "kind": "none",
+    "multiple": null,
+    "on_reach": "stop_entries_and_exit_owned_positions",
+    "success_basis": "reconciled_net_exit_value",
+    "shortfall_action": "report_and_remain_stopped"
+  },
+  "execution": {
+    "borrow": false,
+    "short": false,
+    "auto_transfer": false,
+    "derivatives": false,
+    "per_trade_human_approval": false,
+    "native_protection_required": true,
+    "single_writer_per_account": true,
+    "continuous_kraken_eligibility": true,
+    "schwab_session_policy": "verified_route_and_account_sessions",
+    "sizing_policy_id": "funded_weighted_v1",
+    "strategy_registry_id": "equity_pullback_v1+crypto_to_qualify",
+    "parameter_envelope_id": "live-envelope-v1",
+    "emergency_exit_protocol_id": "native-stop-then-flatten",
+    "external_service_budget_id": "zero-extra-model-spend"
+  },
+  "optional_limits": {
+    "per_position_risk": {
+      "enabled": false,
+      "limit_fraction": null,
+      "reason": "Explicit full-loss research selection; no inherited percentage"
+    },
+    "daily_loss": {
+      "enabled": false,
+      "limit_fraction": null,
+      "reason": "Explicit full-loss research selection; no inherited percentage"
+    },
+    "peak_drawdown": {
+      "enabled": false,
+      "limit_fraction": null,
+      "reason": "Explicit full-loss research selection; no inherited percentage"
+    },
+    "position_notional": {
+      "enabled": false,
+      "limit_fraction": null,
+      "reason": "Explicit full-loss research selection; no inherited percentage"
+    },
+    "ticket_notional": {
+      "enabled": false,
+      "limit_fraction": null,
+      "reason": "Explicit full-loss research selection; no inherited percentage"
+    },
+    "position_count": {
+      "enabled": false,
+      "limit_count": null,
+      "reason": "Funded resources and venue capacities, not a name-count ceiling"
+    }
+  },
+  "activation": {
+    "enabled": false,
+    "grant_id": null,
+    "deployment_receipt_id": null,
+    "policy_digest": null
+  }
+}

@@ -2,46 +2,44 @@
 
 **Not the paper $100→$200 fixture. Paper digest confers no live authority.**
 
-Service mode: `READ_ONLY` · entries `DISARMED`  
-Seat: MacBook Pro (not Studio). Measured 2026-09-20. No live send. No `LIVE_OK`.
+Measured 2026-09-20 MacBook seat, `kraken_read`. Kraken `ZUSD` **100.0000** is a live Balance read, not the WP2 paper fixture. Zero crypto positions, zero open orders.
+
+Service mode: `READ_ONLY` · entries `DISARMED`. No send. No writer claim.
 
 ## Venue reads
 
 ### schwab
 
 - capability: `UNAVAILABLE`
-- source: none
-- unavailable: `schwab: missing SCHWAB_ACCOUNT_HASH`
-- App key/secret **are** present in `~/spiral-broker/.env`. Account hash key exists but is **empty**, so the adapter refuses to invent a book.
-- cash_available / equity / positions / working orders: not claimed
+- source: `None`
+- unavailable: schwab: missing SCHWAB_ACCOUNT_HASH
+- cash_available: `None`
+- equity: `None`
+- positions: `[]`
+- working_orders: `[]`
 
 ### kraken_spot
 
-- capability: `UNAVAILABLE`
-- source: none
-- `KRAKEN_API_KEY` and `KRAKEN_API_SECRET` are **present** in `~/spiral-broker/.env` (non-empty; values not logged).
-- Live read: `kraken: EAPI:Invalid key` (Kraken rejected the API key, not a missing-file). Secret base64-decodes. Key length 55 (Kraken keys are often 56). Re-copy the **public API key** from Kraken → API. Query Funds must be on. Do not paste keys into chat.
+- capability: `DOCUMENTED_ONLY`
+- source: `kraken_read`
+- cash_available: `100`
+- equity: `None`
+- positions: `[]`
+- working_orders: `[]`
 
-## Not compiled
+## Resolved live definition (unarmed until exclusive writer)
 
-No live venue snapshot is available; paper cash was not substituted. There is no live policy digest to GO.
+- campaign_id: `TF-CAMPAIGN-LIVE`
+- revision: `1`
+- profile: `full_loss_research`
+- basis_net_usd: `100` (sum of proven venue cash, not a target)
+- snapshot_id: `kraken_read:kraken_spot`
+- policy_digest: `ff91acfe043054bc170df7fc82e3b4d9983a7ac170fbded773af601dbe5faca8`
+- objective: `none` (no $200 carry-over)
+- per_trade_human_approval: `False`
+- inherited %/count caps: all `enabled: false`
 
-## Exclusive writer
-
-This MacBook has no `temple-flow` launchd job. Studio plist still names `/Users/tony_studio/temple-flow`. Do not `claim-writer` here while Studio may still send.
-
-## After credentials
-
-```sh
-# Kraken
-# add to ~/spiral-broker/.env:
-# KRAKEN_API_KEY=...
-# KRAKEN_API_SECRET=...   # Kraken "private key", base64
-chmod 600 /Users/vaquez/spiral-broker/.env
-
-# Schwab account hash (same file): SCHWAB_ACCOUNT_HASH=<hash from accountNumbers>
-
-PYTHONPATH=src python3 scripts/temple_flow_desk.py --state /tmp/tf-live-probe preview-live
-```
+GO against this digest accepts this revision. Existing broker stops stay in place.
+New sends stay DISARMED until `desk claim-writer` on the exclusive host.
 
 Engineering verification ≠ profitability.
