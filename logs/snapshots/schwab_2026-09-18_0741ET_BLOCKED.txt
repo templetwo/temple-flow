@@ -1,0 +1,6 @@
+Schwab snapshot BLOCKED 2026-09-18 ~07:41 ET
+error: invalid_grant — Refresh token is invalid, expired or revoked
+command: bash ~/temple-flow/scripts/run_snapshot.sh
+machine: mac-studio 326e5759-cb11-44cb-b048-25817a33c241
+token_status before refresh attempt: access_expired, refresh_valid claimed true then refresh failed
+fallback: last live child-flattened EOD 2026-09-17 ~16:31 ET + Yahoo chart marks

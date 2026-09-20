@@ -1,0 +1,173 @@
+{
+  "coverage": "Tue pre-send restamp 2026-09-15 ~07:51 ET via run_snapshot.sh",
+  "captured_at_et": "2026-09-15 07:52:33 ET",
+  "captured_at_utc": "2026-09-15T11:52:33.750894+00:00",
+  "book": {
+    "equity": 592.06,
+    "cash": 433.47,
+    "avail": 433.47,
+    "bp": 433.47,
+    "lmv": 158.59,
+    "sod": 595.22,
+    "dayPL": -3.16,
+    "peak": 602.47,
+    "peak_dd_pct": 1.7279,
+    "positions": [
+      {
+        "symbol": "IBIT",
+        "qty": 2.0,
+        "avg": 43.9,
+        "mark": 43.49,
+        "mv": 86.98,
+        "dayPL": -2.5
+      },
+      {
+        "symbol": "NVO",
+        "qty": 1.0,
+        "avg": 38.92,
+        "mark": 43.03,
+        "mv": 43.03,
+        "dayPL": -0.42
+      },
+      {
+        "symbol": "ETHA",
+        "qty": 1.0,
+        "avg": 18.75,
+        "mark": 18.64,
+        "mv": 18.64,
+        "dayPL": -0.53
+      },
+      {
+        "symbol": "NOK",
+        "qty": 1.0,
+        "avg": 9.97,
+        "mark": 9.94,
+        "mv": 9.94,
+        "dayPL": 0.29
+      }
+    ]
+  },
+  "quotes": {
+    "ETHA": {
+      "last": 18.64,
+      "mark": 18.64,
+      "bid": 18.64,
+      "ask": 18.64
+    },
+    "IBIT": {
+      "last": 43.49,
+      "mark": 43.49,
+      "bid": 43.49,
+      "ask": 43.49
+    },
+    "NVO": {
+      "last": 43.01,
+      "mark": 43.03,
+      "bid": 43.0,
+      "ask": 43.03
+    },
+    "NOK": {
+      "last": 9.95,
+      "mark": 9.94,
+      "bid": 9.94,
+      "ask": 9.95
+    },
+    "FBTC": {
+      "last": 66.82,
+      "mark": 66.84,
+      "bid": 66.8,
+      "ask": 66.84
+    }
+  },
+  "orders": [
+    {
+      "id": 1007923976484,
+      "symbol": "IBIT",
+      "side": "BUY",
+      "type": "LIMIT",
+      "price": 43.23,
+      "qty": 1.0,
+      "remaining": 1.0,
+      "status": "WORKING",
+      "duration": "GOOD_TILL_CANCEL",
+      "role": "parent",
+      "ticket": "TF-20260915-01",
+      "child_id": 1007923976485
+    },
+    {
+      "id": 1007923976485,
+      "symbol": "IBIT",
+      "side": "SELL",
+      "type": "STOP",
+      "stopPrice": 41.2,
+      "qty": 1.0,
+      "remaining": 1.0,
+      "status": "AWAITING_PARENT_ORDER",
+      "duration": "GOOD_TILL_CANCEL",
+      "role": "child",
+      "parent_id": 1007923976484,
+      "ticket": "TF-20260915-01"
+    },
+    {
+      "id": 1007762031725,
+      "symbol": "IBIT",
+      "side": "SELL",
+      "type": "STOP",
+      "stopPrice": 41.2,
+      "qty": 2.0,
+      "remaining": 2.0,
+      "status": "WORKING",
+      "duration": "GOOD_TILL_CANCEL",
+      "role": "protect_existing"
+    },
+    {
+      "id": 1007762031723,
+      "symbol": "NVO",
+      "side": "SELL",
+      "type": "STOP",
+      "stopPrice": 42.5,
+      "qty": 1.0,
+      "remaining": 1.0,
+      "status": "WORKING",
+      "duration": "GOOD_TILL_CANCEL",
+      "role": "protect_existing",
+      "note": "TF-20260914-01 queued RTH: cancel then OCO 45 XOR 42.50"
+    },
+    {
+      "id": 1007757064203,
+      "symbol": "ETHA",
+      "side": "SELL",
+      "type": "STOP",
+      "stopPrice": 17.7,
+      "qty": 1.0,
+      "remaining": 1.0,
+      "status": "WORKING",
+      "duration": "GOOD_TILL_CANCEL",
+      "role": "protect_existing"
+    },
+    {
+      "id": 1007691287449,
+      "symbol": "NOK",
+      "side": "SELL",
+      "type": "STOP",
+      "stopPrice": 9.45,
+      "qty": 1.0,
+      "remaining": 1.0,
+      "status": "WORKING",
+      "duration": "GOOD_TILL_CANCEL",
+      "role": "protect_existing"
+    }
+  ],
+  "mv_session": {
+    "armed": true,
+    "armed_until": "2026-09-15T16:00:00-04:00",
+    "ticket": "TF-20260915-01"
+  },
+  "restamp": {
+    "routine": "Tue NVO/IBIT pre-send restamp",
+    "TF-20260914-01": "PASS",
+    "TF-20260914-02": "SUPERSEDED_by_TF-20260915-01",
+    "TF-20260915-01": "WORKING_HOLD",
+    "ETHA_add": "VETO_through_FOMC"
+  }
+}

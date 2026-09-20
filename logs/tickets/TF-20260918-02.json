@@ -1,0 +1,88 @@
+{
+  "ticket_id": "TF-20260918-02",
+  "created_at_utc": "2026-09-18T11:45:00Z",
+  "created_at_et": "2026-09-18 ~07:45 ET",
+  "desk": "Funds-beast mint; Risk Manager PASS (executor package)",
+  "lane": "MV",
+  "mv_session": "REQUIRES_ARM",
+  "mode": "live",
+  "status": "VETO_VOIDED",
+  "verdict": "VETO",
+  "symbol": "IBIT",
+  "side": "BUY",
+  "qty": 1,
+  "trigger": "cash ~73%>>20%; \u00a79; post-FOMC; weekly cash SLA breach; pullback GTC",
+  "entry": {
+    "type": "limit",
+    "price": 42.9,
+    "zone": [
+      42.8,
+      43.0
+    ],
+    "prefer": 42.9,
+    "tif": "GTC",
+    "attached_stop": 41.2,
+    "do_not_chase": true,
+    "cap_note": "Yahoo Thu C 43.30 \u2014 GTC 42.90 pullback below mark, NOT marketable; no through-cap chase"
+  },
+  "stop": 41.2,
+  "supersedes": "TF-20260917-02 (desk_approved sent=false stale \u2014 do not reuse)",
+  "book_at_size": {
+    "equity_source": "Thu EOD Schwab carry (Fri live BLOCKED)",
+    "equity": 591.99,
+    "cash": 432.74,
+    "ibit_mark_yahoo": 43.3,
+    "ibit_qty": 3,
+    "dd_pct": 1.74
+  },
+  "risk": {
+    "ticket_risk_usd": 1.7,
+    "ticket_risk_pct": 0.287,
+    "max_risk_2_5pct": 14.8,
+    "position_dollars": 42.9,
+    "position_pct": 7.25,
+    "combined_ibit_qty_if_fill": 4,
+    "combined_ibit_avg_if_fill": 43.4825,
+    "combined_ibit_stop_risk_usd": 9.13,
+    "combined_ibit_stop_pct": 1.542,
+    "atr_filter": "CLEAR (gold Thu ATR_RATIO 1.076)",
+    "mv_exempt_18pct_size": true
+  },
+  "gates": {
+    "breaker_daily": false,
+    "breaker_dd": false,
+    "cash_funds": true,
+    "through_cap_chase": false,
+    "hard_hold_today": false
+  },
+  "approvals": {
+    "human_phrase_required": "approve TF-20260918-02",
+    "desk_phrase_required": "approve TF-20260918-02",
+    "also_requires": "arm MV session",
+    "desk_may_approve": true,
+    "desk_approved": true,
+    "human_approved": false,
+    "risk_pass_confirmed": false,
+    "desk_phrase": "approve TF-20260918-02",
+    "approved_by": "Funds-beast \u00a77 standing desk-approve",
+    "desk_approved_at_et": "2026-09-18 ~07:46 ET",
+    "gate": "Schwab invalid_grant \u2014 no send until live GET 200",
+    "risk_contingent": true,
+    "risk_note": "Structure OK on Thu carry; reconfirm PASS off live equity after OAuth"
+  },
+  "execution": {
+    "sent": false,
+    "path": "arm MV session \u2192 desk-approve \u2192 Execution send BUY 1 IBIT GTC 42.90 + STOP 41.20; leave Allow until HTTP 201",
+    "block": "VETO_VOIDED \u2014 do not send"
+  },
+  "note": "Risk PASS. Prefer IBIT over ETHA add. If mark \u226442.90 at restamp HOLD \u2014 do not chase. Supersedes unsent 17-02. | Risk CONTINGENT ~07:59 ET Fri: live Schwab invalid_grant confirmed. Structure OK vs Thu carry $591.99 \u2014 FINAL PASS only after live GET restamp. No invent. 17-01/02 superseded unsent. | VETO void Sun re-auth \u2014 no replace overnight.",
+  "desk_approved_at_utc": "2026-09-18T11:47:41.129747+00:00",
+  "veto_reason": "Live mark IBIT 46.02 \u2014 GTC 42.90 stale (~$3 under). Through-cap/chase dead. No replace minted Sun \u2014 await Strategist Mon pullback zone.",
+  "vetoed_at_et": "2026-09-20 ~11:41 ET",
+  "live_book_at_veto": {
+    "equity": 601.4,
+    "ibit_mark": 46.02
+  },
+  "voided_at_utc": "2026-09-20T15:42:10Z",
+  "void_reason": "GTC 42.90 stale vs live mark 46.02; Risk VETO VOID ~11:41 ET; no Sun replace"
+}

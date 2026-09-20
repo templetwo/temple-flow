@@ -1,0 +1,39 @@
+{
+  "ticket_id": "TF-20260920-01",
+  "created_at_utc": "2026-09-20T15:42:18Z",
+  "created_at_et": "2026-09-20 ~11:41 ET",
+  "desk": "Risk Manager",
+  "lane": "protect_recycle",
+  "status": "human_approved_queued_mon_rth",
+  "symbol": "NOK",
+  "rth_only": true,
+  "sequence": [
+    {
+      "op": "cancel_by_id",
+      "order_id": "1007691287449"
+    },
+    {
+      "op": "place_oco",
+      "qty": 1,
+      "limit": 10.55,
+      "stop": 9.45,
+      "side": "SELL",
+      "tif": "GTC"
+    }
+  ],
+  "supersedes": "TF-20260918-01",
+  "approvals": {
+    "human_phrase_required": "approve TF-20260920-01",
+    "desk_approved": true,
+    "human_approved": true,
+    "approved_phrase": "approve TF-20260920-01",
+    "approved_by": "desk_lead + anthony exact",
+    "approved_at_utc": "2026-09-20T15:43:48Z"
+  },
+  "constraints": {
+    "no_sunday_ah": true,
+    "no_second_sell_while_stop_owns": true
+  },
+  "execution": null,
+  "note": " | Desk + Anthony exact approve \u2014 Mon RTH ~09:35 only."
+}

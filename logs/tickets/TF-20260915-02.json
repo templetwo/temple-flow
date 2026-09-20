@@ -1,0 +1,38 @@
+{
+  "ticket_id": "TF-20260915-02",
+  "created_at_utc": "2026-09-15T14:59:36Z",
+  "status": "VETO_VOIDED",
+  "symbol": "IBIT",
+  "side": "buy",
+  "qty": 1,
+  "entry": {
+    "type": "limit",
+    "price": 43.23,
+    "zone": [
+      43.0,
+      43.23
+    ],
+    "tif": "GTC",
+    "attached_stop": 41.2
+  },
+  "stop": 41.2,
+  "supersedes_limit": 42.94,
+  "mv_session": "ARMED",
+  "approvals": {
+    "desk_approved": false,
+    "note": "Prior desk approve cited 42.94 \u2014 stale after Risk resize to 43.23"
+  },
+  "constraints": {
+    "no_chase": true,
+    "no_replace_up": true
+  },
+  "execution": {
+    "sent": false,
+    "void_reason": "Strategist/Risk: GTC 43.23 with mark ~42.94 is marketable gap-air fill, not shelf pullback. Desk voided both desk-approves."
+  },
+  "verdict": "VETO",
+  "veto_reason": "Strategist AMEND: mark below shelf \u2014 GTC 43.00-43.23 marketable into gap air. Kill add. Protect 15-01 only until reclaim 43.23.",
+  "note": " | VETO \u2014 do not send. Gap-air marketable. | VETO_VOIDED ~10:59 ET \u2014 gap-air kill; protect only until reclaim >43.23.",
+  "vetoed_at_utc": "2026-09-15T14:59:49Z",
+  "voided_at_utc": "2026-09-15T15:00:09.458626+00:00"
+}

@@ -1,0 +1,67 @@
+{
+  "asof_et": "2026-09-16T07:47:09-04:00",
+  "asof_utc": "2026-09-16T11:47:09.067264+00:00",
+  "token_status": {
+    "status": "valid",
+    "refresh_valid": true,
+    "access_valid": true
+  },
+  "accounts_http": 200,
+  "orders_http": 200,
+  "quotes_http": 200,
+  "book": [
+    {
+      "equity": 590.78,
+      "cash": 432.74,
+      "avail": 432.74,
+      "bp": 432.74,
+      "lmv": 158.04,
+      "sod": 590.11,
+      "positions": [
+        {
+          "symbol": "IBIT",
+          "qty": 3.0,
+          "avg": 43.676667,
+          "mv": 129.33,
+          "dayPL": -43.23
+        },
+        {
+          "symbol": "NOK",
+          "qty": 1.0,
+          "avg": 9.97,
+          "mv": 10.46,
+          "dayPL": 0.62
+        },
+        {
+          "symbol": "ETHA",
+          "qty": 1.0,
+          "avg": 18.75,
+          "mv": 18.25,
+          "dayPL": 0.05
+        }
+      ]
+    }
+  ],
+  "quotes": {
+    "ETHA": {
+      "last": 18.25,
+      "mark": 18.25
+    },
+    "IBIT": {
+      "last": 43.11,
+      "mark": 43.11
+    },
+    "NVO": {
+      "last": 42.7,
+      "mark": 42.69
+    },
+    "NOK": {
+      "last": 10.46,
+      "mark": 10.46
+    },
+    "FBTC": {
+      "last": 66.2046,
+      "mark": 66.22
+    }
+  }
+}

@@ -1,0 +1,84 @@
+{
+  "ticket_id": "TF-20260918-01",
+  "created_at_utc": "2026-09-18T11:45:00Z",
+  "created_at_et": "2026-09-18 ~07:45 ET",
+  "desk": "Funds-beast mint; Risk Manager PASS (executor package)",
+  "lane": "protect_recycle",
+  "mode": "live",
+  "status": "superseded_by_TF-20260920-01",
+  "verdict": "PASS",
+  "symbol": "NOK",
+  "side": "SELL",
+  "rth_only": true,
+  "mv_session": "NOT_REQUIRED",
+  "trigger": "leftover recycle SLA age ~25d; cash ~73%; Fri decouple from MV arm (Thu defect)",
+  "sequence": [
+    {
+      "op": "cancel_by_id",
+      "order_id": "1007691287449",
+      "note": "NOK stop \u2014 RTH only; no AH cancel"
+    },
+    {
+      "op": "place_oco",
+      "qty": 1,
+      "limit": 10.55,
+      "stop": 9.45,
+      "side": "SELL",
+      "tif": "GTC",
+      "note": "ONE OCO LIMIT 10.55 XOR STOP 9.45 after cancel (one-sell)"
+    }
+  ],
+  "supersedes": "TF-20260917-01 (desk_approved sent=false stale unsent \u2014 do not reuse)",
+  "book_at_size": {
+    "equity_source": "Thu EOD Schwab carry (Fri live BLOCKED invalid_grant)",
+    "equity": 591.99,
+    "cash": 432.74,
+    "cash_pct": 73.1,
+    "peak": 602.47,
+    "dd_pct": 1.74,
+    "nok_mark_yahoo": 10.6,
+    "avg": 9.97,
+    "upl_pct": 6.32,
+    "age_calendar_days_approx": 25
+  },
+  "risk": {
+    "stop_risk_dollars_from_mark": 1.15,
+    "stop_risk_pct": 0.194,
+    "limit_tp": 10.55,
+    "max_risk_2_5pct": 14.8
+  },
+  "gates": {
+    "breaker_daily": false,
+    "breaker_dd": false,
+    "one_sell": true,
+    "rth_only": true,
+    "mv_arm_required": false,
+    "note": "NOK recycle MUST NOT be gated on MV arm (Fri guidance from Thu defect)"
+  },
+  "approvals": {
+    "human_phrase_required": "approve TF-20260918-01",
+    "desk_phrase_required": "approve TF-20260918-01",
+    "desk_may_approve": true,
+    "desk_approved": true,
+    "human_approved": false,
+    "risk_pass_confirmed": true,
+    "desk_phrase": "approve TF-20260918-01",
+    "approved_by": "Funds-beast \u00a77 standing desk-approve",
+    "desk_approved_at_et": "2026-09-18 ~07:46 ET",
+    "gate": "Schwab invalid_grant \u2014 no send until live GET 200"
+  },
+  "execution": {
+    "sent": false,
+    "queued": "RTH cancel\u2192OCO after approve; independent of arm MV session"
+  },
+  "note": "Age SLA met (~25d since ~2026-08-24). UPL ~+6.3% (<8%). One-sell RTH. Do not resurrect TF-20260910-01 / 17-01. | Reauth LIVE 2026-09-20T15:40:55Z. Send only Mon RTH cancel\u2192OCO. Risk restamp requested.",
+  "desk_approved_at_utc": "2026-09-18T11:47:41.129230+00:00",
+  "reauth_restored_at_utc": "2026-09-20T15:40:55Z",
+  "book_at_reauth": {
+    "equity": 601.4,
+    "cash": 432.74,
+    "mark_NOK": 10.68,
+    "stop_working": "1007691287449 PENDING_ACTIVATION 9.45"
+  },
+  "superseded_at_utc": "2026-09-20T15:42:10Z"
+}

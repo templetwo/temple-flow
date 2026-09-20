@@ -1,0 +1,9 @@
+{
+  "armed": false,
+  "armed_at": "2026-09-15T06:44:15-04:00",
+  "until": "2026-09-15T16:00:00-04:00",
+  "source": "EOD auto-disarm 16:00 ET 2026-09-15 (Desk Lead confirm)",
+  "ticket": "TF-20260915-01",
+  "disarmed_at": "2026-09-15T16:30:21-04:00",
+  "prior_ticket": "TF-20260915-01"
+}

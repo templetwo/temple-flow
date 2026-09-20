@@ -36,5 +36,12 @@
     "blocked_on": "NVO flat",
     "approved_at_et": "2026-09-14 16:36 ET"
   },
-  "note": "APPROVED ~16:36 ET. Contingent \u2014 no send until NVO flat. | 2026-09-15 \u00a79: through-cap leave-GTC killed; deepen TF-20260915-01."
+  "note": "APPROVED ~16:36 ET. Contingent \u2014 no send until NVO flat. | 2026-09-15 \u00a79: through-cap leave-GTC killed; deepen TF-20260915-01.",
+  "restamp_2026-09-15_0751ET": {
+    "verdict": "SUPERSEDED",
+    "do_not_send": true,
+    "live_ibit_mark": 43.49,
+    "note": "TF-20260915-01 already WORKING BUY 1 @43.23; 02 remains dead",
+    "utc": "2026-09-15T11:52:54.597203+00:00"
+  }
 }

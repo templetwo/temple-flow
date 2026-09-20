@@ -6,7 +6,7 @@
   "lane": "MV",
   "mv_session": "ARMED",
   "mode": "live",
-  "status": "desk_approved_mv_armed",
+  "status": "FILLED",
   "symbol": "IBIT",
   "side": "buy",
   "qty": 1,
@@ -36,7 +36,18 @@
     "no_open_count_refuse": true
   },
   "execution": {
-    "path": "MV armed \u2014 Execution send when RTH/gates allow"
+    "path": "MV armed \u2014 Execution send when RTH/gates allow",
+    "sent": true,
+    "sent_at_utc": "2026-09-15T10:46:20Z",
+    "parent_order_id": "1007923976484",
+    "parent_status": "FILLED",
+    "child_stop_id": "1007923976485",
+    "child_status": "WORKING",
+    "http": 201,
+    "filled": true,
+    "fill_price": 43.23,
+    "fill_qty": 1,
+    "filled_at_utc": "2026-09-15T13:38:04Z"
   },
-  "note": " | Desk-approved + arm MV session ~06:42 ET 2026-09-15."
+  "note": " | Desk-approved + arm MV session ~06:42 ET 2026-09-15. | SENT parent 1007923976484 / child stop 1007923976485. | FILLED @43.23; child STOP 1007923976485 WORKING @41.20."
 }

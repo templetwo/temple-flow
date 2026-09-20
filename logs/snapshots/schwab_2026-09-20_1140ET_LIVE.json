@@ -1,0 +1,66 @@
+{
+  "asof_et": "2026-09-20T11:40:10-04:00",
+  "token_status": "valid",
+  "equity": 601.4,
+  "cash": 432.74,
+  "lmv": 168.66,
+  "sod": 601.4,
+  "positions": [
+    {
+      "symbol": "IBIT",
+      "qty": 3.0,
+      "avg": 43.676667,
+      "mv": 138.06,
+      "dayPL": 0.0
+    },
+    {
+      "symbol": "NOK",
+      "qty": 1.0,
+      "avg": 9.97,
+      "mv": 10.68,
+      "dayPL": 0.0
+    },
+    {
+      "symbol": "ETHA",
+      "qty": 1.0,
+      "avg": 18.75,
+      "mv": 19.92,
+      "dayPL": 0.0
+    }
+  ],
+  "stops_pending": [
+    {
+      "symbol": "IBIT",
+      "stop": 41.2,
+      "remaining": 1.0,
+      "id": 1007923976485
+    },
+    {
+      "symbol": "IBIT",
+      "stop": 41.2,
+      "remaining": 2.0,
+      "id": 1007762031725
+    },
+    {
+      "symbol": "ETHA",
+      "stop": 17.7,
+      "remaining": 1.0,
+      "id": 1007757064203
+    },
+    {
+      "symbol": "NOK",
+      "stop": 9.45,
+      "remaining": 1.0,
+      "id": 1007691287449
+    }
+  ],
+  "quotes_mark": {
+    "ETHA": 19.92,
+    "IBIT": 46.02,
+    "NVO": 43.24,
+    "NOK": 10.68,
+    "FBTC": 70.66
+  },
+  "peak_ref": 602.47,
+  "dd_vs_peak_pct": 0.178
+}

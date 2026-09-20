@@ -6,7 +6,7 @@
   "lane": "protect_recycle",
   "mv_session": "DISARMED",
   "mode": "live",
-  "status": "human_approved_queued_next_rth",
+  "status": "stopped_flat",
   "symbol": "NVO",
   "rth_only": true,
   "sequence": [
@@ -38,10 +38,112 @@
     "one_mutation_oco_after_cancel": true
   },
   "execution": {
-    "sent": false,
-    "queued": "next_RTH",
-    "reason": "no_AH_cancel",
-    "approved_at_et": "2026-09-14 16:36 ET"
+    "sent": true,
+    "cancel_http": 200,
+    "cancel_order_id": "1007762031723",
+    "oco_http": 201,
+    "oco_order_id": "1007927003404",
+    "utc": "2026-09-15T14:19:29.735310+00:00",
+    "path": "studio_spiral_broker_direct",
+    "params": {
+      "symbol": "NVO",
+      "qty": 1,
+      "limit": 45.0,
+      "stop": 42.5,
+      "tif": "GTC",
+      "side": "SELL"
+    },
+    "old_stop_after": {
+      "id": 1007762031723,
+      "status": "CANCELED",
+      "type": "STOP",
+      "price": null,
+      "stopPrice": 42.5,
+      "duration": "GOOD_TILL_CANCEL",
+      "qty": 1.0,
+      "cancelable": false,
+      "orderStrategyType": "SINGLE",
+      "legs": [
+        {
+          "instruction": "SELL",
+          "symbol": "NVO",
+          "qty": 1.0
+        }
+      ],
+      "children": []
+    },
+    "oco_recon": {
+      "id": 1007927003404,
+      "status": "WORKING",
+      "type": null,
+      "price": null,
+      "stopPrice": null,
+      "duration": null,
+      "qty": null,
+      "cancelable": true,
+      "orderStrategyType": "OCO",
+      "legs": [],
+      "children": [
+        {
+          "id": 1007927003405,
+          "status": "WORKING",
+          "type": "LIMIT",
+          "price": 45.0,
+          "stopPrice": null,
+          "qty": 1.0,
+          "legs": [
+            {
+              "instruction": "SELL",
+              "symbol": "NVO",
+              "qty": 1.0
+            }
+          ]
+        },
+        {
+          "id": 1007927003406,
+          "status": "WORKING",
+          "type": "STOP",
+          "price": null,
+          "stopPrice": 42.5,
+          "qty": 1.0,
+          "legs": [
+            {
+              "instruction": "SELL",
+              "symbol": "NVO",
+              "qty": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    "canceled_stop_id": "1007762031723",
+    "oco_parent_id": "1007927003404",
+    "oco_limit_id": "1007927003405",
+    "oco_stop_id": "1007927003406",
+    "limit": 45.0,
+    "stop": 42.5,
+    "sent_at_utc": "2026-09-15T14:19:29+00:00",
+    "oco_stop_filled": true,
+    "fill_price": 42.5,
+    "filled_stop_id": "1007927003406",
+    "limit_canceled": true,
+    "limit_id": "1007927003405",
+    "nvo_flat": true
   },
-  "note": "APPROVED ~16:36 ET. Queued next RTH only \u2014 no AH cancel."
+  "note": "APPROVED ~16:36 ET. Queued next RTH only \u2014 no AH cancel. | 2026-09-15 ~07:51 ET restamp PASS off equity $592.06; hold params; send RTH. | 2026-09-15T14:19:29.735310+00:00 cancel 200 then OCO http 201 id 1007927003404 | STOPPED @42.50 ~10:56 ET; NVO flat; cash recycled ~$42.50.",
+  "restamp_2026-09-15_0751ET": {
+    "verdict": "PASS",
+    "equity": 592.06,
+    "nvo_mark": 43.03,
+    "limit_tp": 45.0,
+    "stop": 42.5,
+    "risk_usd": 0.53,
+    "risk_pct": 0.0895,
+    "tp_refresh": "none \u2014 45.00 still above live mark",
+    "execution_hold": "RTH ~09:35 cancel 1007762031723 then ONE OCO SELL LIMIT 1 @45.00 XOR STOP 42.50",
+    "no_ah_cancel": true,
+    "utc": "2026-09-15T11:52:54.597203+00:00"
+  },
+  "mutated_at_utc": "2026-09-15T14:19:42.212247+00:00",
+  "closed_at_utc": "2026-09-15T14:58:02.817170+00:00"
 }

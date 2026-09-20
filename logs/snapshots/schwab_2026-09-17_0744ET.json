@@ -1,0 +1,48 @@
+{
+  "ts_et": "2026-09-17T07:44:23.494029-04:00",
+  "ts_utc": "2026-09-17T11:44:23.494029+00:00",
+  "source": "mac spiral-broker run_snapshot.sh Risk Thu restamp",
+  "mv": "DISARMED_at_restamp",
+  "book": {
+    "equity": 590.95,
+    "cash": 432.74,
+    "sod": 590.15,
+    "peak": 602.47,
+    "day_pnl": 0.8,
+    "day_pct": 0.136,
+    "dd_pct": 1.912,
+    "positions": [
+      {
+        "symbol": "IBIT",
+        "qty": 3.0,
+        "avg": 43.676667,
+        "mv": 129.3
+      },
+      {
+        "symbol": "NOK",
+        "qty": 1.0,
+        "avg": 9.97,
+        "mv": 10.61
+      },
+      {
+        "symbol": "ETHA",
+        "qty": 1.0,
+        "avg": 18.75,
+        "mv": 18.3
+      }
+    ]
+  },
+  "quotes": {
+    "IBIT": {
+      "last": 43.1,
+      "mark": 43.1
+    },
+    "NOK": {
+      "last": 10.61,
+      "mark": 10.61
+    },
+    "ETHA": {
+      "last": 18.3
+    }
+  }
+}
