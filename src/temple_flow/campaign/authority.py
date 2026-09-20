@@ -24,6 +24,7 @@ class Authority:
 
     def prepare(self, definition: dict[str, Any]) -> dict[str, Any]:
         doc = json.loads(json.dumps(definition))
+        doc = {k: v for k, v in doc.items() if not str(k).startswith("_")}
         if doc.get("definition_state") == "draft":
             raise ContractError("draft cannot be prepared without resolved snapshots")
         doc["definition_state"] = "prepared"
@@ -87,7 +88,7 @@ class Authority:
             accepted_digest=digest,
             generation=1,
             accepted_at=_now(),
-            entry_permission="ENABLED" if not live else "DISARMED",
+            entry_permission="ENABLED",
         )
         armed = json.loads(json.dumps(doc))
         armed["activation"] = {

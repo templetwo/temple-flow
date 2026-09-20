@@ -83,6 +83,7 @@ def compile_live_definition(probe: dict[str, Any]) -> dict[str, Any]:
             "parameter_envelope_id": "live-envelope-v1",
             "emergency_exit_protocol_id": "native-stop-then-flatten",
             "external_service_budget_id": "zero-extra-model-spend",
+            "poc_trend_continuation": False,
         },
         "optional_limits": {
             "per_position_risk": {
@@ -122,7 +123,6 @@ def compile_live_definition(probe: dict[str, Any]) -> dict[str, Any]:
             "deployment_receipt_id": None,
             "policy_digest": None,
         },
-        "_compiled_at": as_of,
     }
 
 

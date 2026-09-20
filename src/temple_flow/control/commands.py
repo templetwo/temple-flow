@@ -28,7 +28,9 @@ class Desk:
         self._grant: dict[str, Any] | None = None
 
     def prepare(self, campaign_path: Path) -> dict[str, Any]:
-        doc = load_json(campaign_path)
+        return self.prepare_definition(load_json(campaign_path))
+
+    def prepare_definition(self, doc: dict[str, Any]) -> dict[str, Any]:
         for sleeve in doc["capital"]["venues"]:
             self.store.ensure_account(
                 sleeve["venue"],

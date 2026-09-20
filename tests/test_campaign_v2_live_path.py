@@ -117,6 +117,27 @@ class NoPaperSubstitution(unittest.TestCase):
         self.assertIn("nonce=", posted["data"])
         self.assertEqual(posted["content_type"], "application/x-www-form-urlencoded")
 
+    def test_kraken_url_does_not_glue_host(self):
+        from temple_flow.adapters.kraken import kraken_url
+
+        self.assertEqual(kraken_url("/0/private/OpenOrders"), "https://api.kraken.com/0/private/OpenOrders")
+        self.assertEqual(kraken_url("openorders"), "https://api.kraken.com/0/private/OpenOrders")
+        self.assertNotIn("comopen", kraken_url("openorders"))
+
+    def test_writer_permit_same_host_other_pid(self):
+        from temple_flow.execution.writer import WriterLease
+
+        tmp = tempfile.TemporaryDirectory()
+        lease = WriterLease(Path(tmp.name), "kraken_spot", "KRAKEN_RESEARCH")
+        rec = lease.claim()
+        rec["pid"] = 1
+        rec["permit"] = "live-writer-1"
+        Path(tmp.name, "writer-kraken_spot-KRAKEN_RESEARCH.json").write_text(json.dumps(rec))
+        permit = lease.permit()
+        self.assertIsNotNone(permit)
+        self.assertNotEqual(permit, "live-writer-1")
+        tmp.cleanup()
+
     def test_crypto_spot_declines_short_history(self):
         from temple_flow.strategies.crypto_spot import evaluate_pullback
         from decimal import Decimal

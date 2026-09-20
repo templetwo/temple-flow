@@ -13,7 +13,7 @@ import os
 import time
 import urllib.parse
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
 from typing import Any
 
 from temple_flow.adapters.credentials import kraken_key_names, load_env_files, present
@@ -28,6 +28,23 @@ from temple_flow.adapters.protocol import (
 
 PUBLIC = "https://api.kraken.com"
 SPOT_PAIRS = ("XBTUSD", "ETHUSD")
+PAIR_ASSET = {"XBTUSD": "XXBT", "ETHUSD": "XETH"}
+
+
+def kraken_url(path: str) -> str:
+    """Join public host and API path. Bare 'openorders' must not become api.kraken.comopenorders."""
+    p = path.strip()
+    if not p.startswith("/"):
+        if p.lower() in {"openorders", "addorder", "cancelorder", "balance", "queryorders"}:
+            p = "/0/private/" + {"openorders": "OpenOrders", "addorder": "AddOrder", "cancelorder": "CancelOrder", "balance": "Balance", "queryorders": "QueryOrders"}[p.lower()]
+        else:
+            p = "/" + p
+    return PUBLIC.rstrip("/") + p
+
+
+def _quantize(value: str, decimals: str | int) -> str:
+    q = Decimal("1").scaleb(-int(decimals))
+    return format(Decimal(str(value)).quantize(q, rounding=ROUND_DOWN), "f")
 
 
 class KrakenAdapter:
@@ -73,7 +90,7 @@ class KrakenAdapter:
     def public(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         import requests  # type: ignore
 
-        r = requests.get(PUBLIC + path, params=params, timeout=30)
+        r = requests.get(kraken_url(path), params=params, timeout=30)
         if r.status_code != 200:
             raise VenueUnavailable(f"kraken public http={r.status_code}")
         body = r.json()
@@ -115,6 +132,7 @@ class KrakenAdapter:
             "lot_decimals": lot,
             "ordermin": str(rec.get("ordermin") or "0"),
             "wsname": rec.get("wsname") or pair,
+            "fee_source": "assetpairs_schedule_not_tradevolume",
         }
 
     def _private(self, path: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -142,7 +160,7 @@ class KrakenAdapter:
         }
         # Body must be the exact string we signed. A dict here is a common
         # EAPI:Invalid key: requests re-encodes and the signature misses.
-        r = requests.post(PUBLIC + path, headers=headers, data=postdata, timeout=30)
+        r = requests.post(kraken_url(path), headers=headers, data=postdata, timeout=30)
         if r.status_code != 200:
             raise VenueUnavailable(f"kraken: http={r.status_code}")
         body = r.json()
@@ -172,6 +190,18 @@ class KrakenAdapter:
 
         for oid, rec in open_orders:
             descr = rec.get("descr") or {}
+            close = descr.get("close") or ""
+            stop = None
+            if descr.get("ordertype") in {"stop-loss", "stop-loss-limit"}:
+                stop = dec(descr.get("price"))
+            else:
+                parts = str(close).replace(",", " ").split()
+                for tok in reversed(parts):
+                    try:
+                        stop = Decimal(tok)
+                        break
+                    except Exception:
+                        continue
             working.append(
                 WorkingOrder(
                     broker_order_id=str(oid),
@@ -180,10 +210,12 @@ class KrakenAdapter:
                     status=str(rec.get("status") or ""),
                     order_type=descr.get("ordertype"),
                     price=dec(descr.get("price")),
+                    stop_price=stop,
                     qty=dec(rec.get("vol")),
                     remaining=dec(rec.get("vol")) - (dec(rec.get("vol_exec")) or Decimal("0"))
                     if rec.get("vol")
                     else None,
+                    raw={"close": close, "oflags": rec.get("oflags")},
                 )
             )
         self._version += 1
@@ -210,17 +242,20 @@ class KrakenAdapter:
         if intent.get("mode") != "live":
             return SubmitAck("REJECTED", None, "intent_not_live")
         try:
+            fees = self.pair_fees(str(intent["instrument_id"]))
             payload = {
                 "pair": intent["instrument_id"],
                 "type": "buy" if intent["side"] == "buy" else "sell",
                 "ordertype": "limit",
-                "price": intent["limit_price"],
-                "volume": intent["quantity"],
+                "price": _quantize(str(intent["limit_price"]), fees["pair_decimals"]),
+                "volume": _quantize(str(intent["quantity"]), fees["lot_decimals"]),
                 "oflags": "post",
             }
             if intent.get("protective_stop_price"):
                 payload["close[ordertype]"] = "stop-loss"
-                payload["close[price]"] = intent["protective_stop_price"]
+                payload["close[price]"] = _quantize(
+                    str(intent["protective_stop_price"]), fees["pair_decimals"]
+                )
             result = self._private("/0/private/AddOrder", payload)
         except VenueUnavailable as exc:
             return SubmitAck("UNKNOWN", None, str(exc))

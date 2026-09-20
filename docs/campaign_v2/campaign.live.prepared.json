@@ -46,7 +46,8 @@
     "strategy_registry_id": "equity_pullback_v1+crypto_to_qualify",
     "parameter_envelope_id": "live-envelope-v1",
     "emergency_exit_protocol_id": "native-stop-then-flatten",
-    "external_service_budget_id": "zero-extra-model-spend"
+    "external_service_budget_id": "zero-extra-model-spend",
+    "poc_trend_continuation": true
   },
   "optional_limits": {
     "per_position_risk": {

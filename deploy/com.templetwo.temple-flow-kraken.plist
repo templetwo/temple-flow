@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.templetwo.temple-flow-kraken</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/vaquez/temple-flow/scripts/temple_flow_kraken_loop.sh</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/vaquez/temple-flow</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/tmp/tf-kraken-run/logs/launchd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/tf-kraken-run/logs/launchd.err.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>SPIRAL_BROKER_ROOT</key>
+        <string>/Users/vaquez/spiral-broker</string>
+        <key>TEMPLE_FLOW_KRAKEN_STATE</key>
+        <string>/tmp/tf-kraken-run</string>
+        <key>TEMPLE_FLOW_KRAKEN_SLEEP</key>
+        <string>120</string>
+    </dict>
+</dict>
+</plist>

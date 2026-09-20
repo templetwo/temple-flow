@@ -63,33 +63,37 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "preview-live":
         svc = DeskService(Path(args.state))
+        desk = Desk(Path(args.state))
         try:
             probe = svc.probe()
             err = None
             definition = None
+            prepared = None
             try:
                 definition = compile_live_definition(probe)
-            except ValueError as exc:
+                prepared = desk.prepare_definition(definition)
+            except (ValueError, Exception) as exc:
                 err = str(exc)
             dest = ROOT / "docs/campaign_v2/CAMPAIGN_PREVIEW_LIVE.md"
-            text = write_preview(dest, probe, definition, err)
+            text = write_preview(dest, probe, prepared["campaign"] if prepared else definition, err)
             print(text)
-            if definition:
+            if prepared:
                 print(
                     json.dumps(
                         {
-                            "campaign_id": definition["campaign_id"],
-                            "policy_digest": __import__(
-                                "temple_flow.campaign.policy", fromlist=["policy_digest"]
-                            ).policy_digest(definition),
+                            "campaign_id": prepared["campaign"]["campaign_id"],
+                            "revision": prepared["campaign"]["revision"],
+                            "policy_digest": prepared["policy_digest"],
                             "preview": str(dest),
+                            "next": "desk go --live --campaign-id ... --revision ... --digest <policy_digest> enables entries",
                         },
                         indent=2,
                     )
                 )
         finally:
             svc.close()
-        return 0 if definition else 2
+            desk.store.close()
+        return 0 if prepared else 2
     if args.cmd == "serve":
         svc = DeskService(Path(args.state))
         try:

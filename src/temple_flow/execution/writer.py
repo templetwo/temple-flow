@@ -32,8 +32,8 @@ class WriterLease:
     def claim(self, *, force: bool = False) -> dict[str, Any]:
         existing = self.status()
         if existing and existing.get("state") == "ACTIVE" and not force:
-            if existing.get("pid") == os.getpid() and existing.get("host") == socket.gethostname():
-                return existing
+            if existing.get("host") == socket.gethostname():
+                return self._reclaim(existing)
             raise WriterConflict(
                 f"writer already claimed host={existing.get('host')} pid={existing.get('pid')}"
             )
@@ -57,8 +57,22 @@ class WriterLease:
         rec["released_at"] = _now()
         self.path.write_text(json.dumps(rec, indent=2) + "\n")
 
+    def _reclaim(self, existing: dict[str, Any]) -> dict[str, Any]:
+        rec = dict(existing)
+        rec["pid"] = os.getpid()
+        rec["permit"] = f"live-writer-{os.getpid()}"
+        rec["reclaimed_at"] = _now()
+        rec["state"] = "ACTIVE"
+        rec["host"] = socket.gethostname()
+        self.path.write_text(json.dumps(rec, indent=2) + "\n")
+        return rec
+
     def permit(self) -> str | None:
         rec = self.status()
-        if rec and rec.get("state") == "ACTIVE" and rec.get("pid") == os.getpid():
-            return rec.get("permit")
-        return None
+        if not rec or rec.get("state") != "ACTIVE":
+            return None
+        if rec.get("host") != socket.gethostname():
+            return None
+        if rec.get("pid") != os.getpid():
+            rec = self._reclaim(rec)
+        return rec.get("permit")

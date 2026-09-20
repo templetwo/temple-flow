@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_DOWN
 from typing import Any
 
-from temple_flow.adapters.kraken import SPOT_PAIRS, KrakenAdapter
+from temple_flow.adapters.kraken import PAIR_ASSET, SPOT_PAIRS, KrakenAdapter
 from temple_flow.adapters.protocol import VenueUnavailable
 from temple_flow.allocation.allocator import allocate_funded_weighted_v1
 from temple_flow.campaign.contracts import validate_document
@@ -46,9 +46,20 @@ def run_kraken_cycle(
     except VenueUnavailable as exc:
         return {"ok": False, "unavailable": str(exc), "submitted": False}
     cash = snap.cash_available
+    # Kraken Balance can still show ZUSD while a buy rests. Subtract working buy notional.
+    for o in snap.working_orders:
+        if (o.side or "").upper() == "BUY" and o.remaining and o.price:
+            cash = (cash or Decimal("0")) - (o.remaining * o.price)
+            if cash < 0:
+                cash = Decimal("0")
+    held_assets = {p.symbol for p in snap.positions if p.qty and p.qty > 0}
+    poc_trend = bool((campaign or {}).get("execution", {}).get("poc_trend_continuation"))
     evaluations = []
     submitted = []
     for pair in SPOT_PAIRS:
+        if PAIR_ASSET.get(pair) in held_assets:
+            evaluations.append({"pair": pair, "result": "DECLINE", "reason": "ALREADY_LONG"})
+            continue
         try:
             tick = adapter.ticker(pair)
             bars = adapter.ohlc(pair, 1440)
@@ -70,7 +81,7 @@ def run_kraken_cycle(
             cash_s,
             fees["ordermin"],
         )
-        if ev.get("result") != "PASS":
+        if ev.get("result") != "PASS" and poc_trend:
             trend = evaluate_trend_continuation(
                 pair,
                 bars,
@@ -83,8 +94,9 @@ def run_kraken_cycle(
             if trend.get("result") == "PASS":
                 ev = trend
             else:
-                # keep pullback diagnostics as primary decline, attach trend reason
                 ev["trend_reason"] = trend.get("reason")
+        elif ev.get("result") != "PASS":
+            ev["trend_reason"] = "poc_trend_continuation_off"
         ev["last"] = dstr(last)
         ev["fees"] = fees
         evaluations.append(ev)
@@ -102,14 +114,6 @@ def run_kraken_cycle(
             continue
         lease = WriterLease(state_dir, "kraken_spot", adapter.account_alias)
         permit = lease.permit()
-        if not permit:
-            # Autonomy loop is a different PID than the original claim — reclaim for this process.
-            try:
-                rec = lease.claim(force=True)
-                permit = rec.get("permit")
-            except Exception as exc:  # noqa: BLE001
-                ev["send"] = f"blocked_no_writer:{exc}"
-                continue
         if not permit:
             ev["send"] = "blocked_no_writer"
             continue

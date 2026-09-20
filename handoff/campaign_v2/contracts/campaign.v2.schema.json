@@ -261,6 +261,10 @@
         "external_service_budget_id": {
           "type": "string",
           "minLength": 1
+        },
+        "poc_trend_continuation": {
+          "type": "boolean",
+          "$comment": "POC only. Default off. When true, uptrend cash may enter via evaluate_trend_continuation."
         }
       }
     },
