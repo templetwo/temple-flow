@@ -27,6 +27,7 @@ from temple_flow.adapters.protocol import (
 )
 
 PUBLIC = "https://api.kraken.com"
+SPOT_PAIRS = ("XBTUSD", "ETHUSD")
 
 
 class KrakenAdapter:
@@ -68,6 +69,53 @@ class KrakenAdapter:
             as_of=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             status=status,
         )
+
+    def public(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        import requests  # type: ignore
+
+        r = requests.get(PUBLIC + path, params=params, timeout=30)
+        if r.status_code != 200:
+            raise VenueUnavailable(f"kraken public http={r.status_code}")
+        body = r.json()
+        if body.get("error"):
+            raise VenueUnavailable("kraken public: " + ",".join(body["error"]))
+        return body.get("result") or {}
+
+    def ticker(self, pair: str) -> dict[str, Any]:
+        result = self.public("/0/public/Ticker", {"pair": pair})
+        rec = next(iter(result.values()))
+        last = dec((rec.get("c") or [None])[0])
+        bid = dec((rec.get("b") or [None])[0])
+        ask = dec((rec.get("a") or [None])[0])
+        return {"pair": pair, "last": last, "bid": bid, "ask": ask, "raw_keys": list(result)}
+
+    def ohlc(self, pair: str, interval: int = 1440) -> list[list[Any]]:
+        result = self.public("/0/public/OHLC", {"pair": pair, "interval": interval})
+        bars = []
+        for key, val in result.items():
+            if key == "last":
+                continue
+            if isinstance(val, list):
+                bars = val
+        return bars
+
+    def pair_fees(self, pair: str) -> dict[str, str]:
+        result = self.public("/0/public/AssetPairs", {"pair": pair})
+        rec = next(iter(result.values()))
+        # Kraken lists [[volume, percent], ...] percent is 0.26 = 0.26%
+        taker_pct = (rec.get("fees") or [[0, "0.26"]])[0][1]
+        maker_pct = (rec.get("fees_maker") or rec.get("fees") or [[0, "0.16"]])[0][1]
+        taker = str(Decimal(str(taker_pct)) / Decimal("100"))
+        maker = str(Decimal(str(maker_pct)) / Decimal("100"))
+        lot = str(rec.get("lot_decimals", 8))
+        return {
+            "taker": taker,
+            "maker": maker,
+            "pair_decimals": str(rec.get("pair_decimals", 1)),
+            "lot_decimals": lot,
+            "ordermin": str(rec.get("ordermin") or "0"),
+            "wsname": rec.get("wsname") or pair,
+        }
 
     def _private(self, path: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
         import requests  # type: ignore
@@ -162,17 +210,18 @@ class KrakenAdapter:
         if intent.get("mode") != "live":
             return SubmitAck("REJECTED", None, "intent_not_live")
         try:
-            result = self._private(
-                "/0/private/AddOrder",
-                {
-                    "pair": intent["instrument_id"],
-                    "type": "buy" if intent["side"] == "buy" else "sell",
-                    "ordertype": "limit",
-                    "price": intent["limit_price"],
-                    "volume": intent["quantity"],
-                    "oflags": "post",
-                },
-            )
+            payload = {
+                "pair": intent["instrument_id"],
+                "type": "buy" if intent["side"] == "buy" else "sell",
+                "ordertype": "limit",
+                "price": intent["limit_price"],
+                "volume": intent["quantity"],
+                "oflags": "post",
+            }
+            if intent.get("protective_stop_price"):
+                payload["close[ordertype]"] = "stop-loss"
+                payload["close[price]"] = intent["protective_stop_price"]
+            result = self._private("/0/private/AddOrder", payload)
         except VenueUnavailable as exc:
             return SubmitAck("UNKNOWN", None, str(exc))
         txid = (result.get("txid") or [None])[0]

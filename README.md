@@ -2,12 +2,13 @@
 
 Research-capital multi-agent trading desk for **Temple of Two / Spiral** sustainability.
 
-Orchestrated in Grok Bot (Desk Lead: **Funds-beast**). This repo is the durable source of truth for:
+Orchestrated in **Grok Bot** (Desk Lead: **Funds-beast**). Paste-ready profiles: [`bots/GROK_BOT_PROFILES.md`](bots/GROK_BOT_PROFILES.md).
 
-- the **Risk Constitution**
-- bot role specs
-- shared skills / routines
-- data provenance notes
+This repo is the durable source of truth for:
+
+- the **Risk Constitution** (historical) and v2 **campaign** grant
+- bot role specs (including Crypto Velocity)
+- Kraken-first live adapter (`src/temple_flow/`)
 - ticket and audit logs (as the experiment runs)
 
 ## Core principles
@@ -26,29 +27,27 @@ Orchestrated in Grok Bot (Desk Lead: **Funds-beast**). This repo is the durable 
 - [`bots/`](bots/) — paste-ready role descriptions
 - [`skills/`](skills/) — backfill, ticket lifecycle, circuit breaker, brief, attribution
 
-## Live order path
+## Live order path (Kraken-first)
 
 ```
-Data refresh → Technical + Macro packages → Strategist ideas
-    → Risk Manager sized ticket (TF-YYYYMMDD-XX)
-    → Human: approve TF-YYYYMMDD-XX
-    → Execution sends exact params to Schwab
-    → Reconcile + log → Research Digest attribution
+Accepted campaign GO (once)
+  → Kraken Balance + ticker/OHLC + fee snapshot
+  → Crypto Velocity setup + Risk PASS
+  → Execution POST with native stop (claimed writer)
+  → Reconcile fills
 ```
+
+Schwab stays dark until `SCHWAB_ACCOUNT_HASH` is set. Paper digest is not live authority.
 
 ## Capital
 
-- Research capital = **live Schwab equity** (baseline 2026-08-22: ~$95.63)
-- Broker: Schwab (local/Mac Studio API path; no unsupervised agent sends)
-- Mode: shadow/paper until human opens live under ticket approval
+- **Kraken research:** live ZUSD from `kraken_read` (see `docs/campaign_v2/CAMPAIGN_PREVIEW_LIVE.md`)
+- **Schwab:** not this cut
+- Profile: `full_loss_research`. Edge labeled `EXPERIMENTAL_UNPROVEN`
 
 ## Status
 
-- Day 0 scaffold: constitution + bot specs + skills checked in (local)
-- Schemas: SQLite store, ticket JSON, audit events (`schemas/`)
-- Runbooks: shadow mode + home unblock checklist (`runbooks/`)
-- GitHub remote: https://github.com/templetwo/temple-flow (push pending Cursor GitHub reconnect)
-- Universe: crypto hybrid — spot majors for signals, Schwab IBIT/FBTC/ETHA for live (`docs/UNIVERSE.md`)
-- Historical backfill: blocked on crypto data source paths/feeds (5y daily default)
-- Schwab OAuth / execution path: deferred
-- Mode: **shadow** until human opens live
+- v2 campaign runtime on `feat/campaign-v2-wp0-wp2`
+- Grok Bot profiles in `bots/GROK_BOT_PROFILES.md`
+- Kraken keys: `~/spiral-broker/.env` (`KRAKEN_API_KEY`, `KRAKEN_API_SECRET`)
+- Mode: READ_ONLY / DISARMED until `desk go --live` and `claim-writer` for Kraken

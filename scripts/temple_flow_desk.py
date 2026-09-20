@@ -46,9 +46,12 @@ def main(argv: list[str] | None = None) -> int:
     serve.add_argument("--cycles", type=int, default=1)
     serve.add_argument("--interval", type=float, default=5.0)
     claim = sub.add_parser("claim-writer")
-    claim.add_argument("--venue", default="schwab")
-    claim.add_argument("--account", default="SCHWAB_RESEARCH")
+    claim.add_argument("--venue", default="kraken_spot")
+    claim.add_argument("--account", default="KRAKEN_RESEARCH")
     claim.add_argument("--force", action="store_true")
+    kcycle = sub.add_parser("kraken-cycle")
+    kcycle.add_argument("--send", action="store_true", help="Submit PASS intents (live). Default is evaluate only.")
+    kcycle.add_argument("--campaign", default=str(ROOT / "docs/campaign_v2/campaign.live.prepared.json"))
     args = p.parse_args(argv)
 
     if args.cmd == "snapshot":
@@ -98,6 +101,29 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             svc.close()
         return 0
+    if args.cmd == "kraken-cycle":
+        from temple_flow.execution.kraken_cycle import run_kraken_cycle
+        from temple_flow.campaign.contracts import load_json
+
+        desk = Desk(Path(args.state))
+        campaign = load_json(Path(args.campaign))
+        grant = None
+        row = desk.store.get_active_grant(campaign["campaign_id"])
+        if row:
+            grant = {
+                "grant_id": row["grant_id"],
+                "generation": row["generation"],
+                "policy_digest": row["accepted_digest"],
+            }
+        out = run_kraken_cycle(
+            desk.store,
+            Path(args.state),
+            campaign if row else None,
+            grant,
+            send=args.send,
+        )
+        print(json.dumps(out, indent=2, default=str))
+        return 0 if out.get("ok") else 2
     if args.cmd == "claim-writer":
         lease = WriterLease(Path(args.state), args.venue, args.account)
         try:

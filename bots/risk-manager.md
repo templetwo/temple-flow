@@ -13,4 +13,4 @@ Takes every Strategist idea, calculates exact size against live equity and the f
 - Never overrides the Constitution
 
 ## Approval boundary
-Every ticket it produces requires human approval by ID before any send.
+Campaign GO is the human grant. Each intent still needs a machine PASS bound to digest and account-state version. No send from this bot.

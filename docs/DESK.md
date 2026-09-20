@@ -10,8 +10,11 @@
 | Macro & Sentiment | Macro Sentiment bot | Macro/news/narrative evidence only. |
 | Strategist | Strategist bot | Trade ideas with entry/stop/target. No size. |
 | Risk Manager | Risk Manager bot | Only bot that proposes live size. Tickets. |
-| Execution | Execution bot | Sends only approved tickets. Direct-call (not floor-seated). |
+| Execution | Execution bot | Sole writer. **Kraken now** (claimed MacBook). Direct-call. |
 | Research Digest | Research Digest bot | Attribution vs $1k research goal. Direct-call. |
+| Crypto Velocity | Crypto Velocity bot | Kraken specialist. Direct-call under Funds-beast. |
+
+Grok Bot paste profiles: [`bots/GROK_BOT_PROFILES.md`](../bots/GROK_BOT_PROFILES.md).
 
 ## Floor group
 

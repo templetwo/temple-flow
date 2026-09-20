@@ -117,6 +117,14 @@ class NoPaperSubstitution(unittest.TestCase):
         self.assertIn("nonce=", posted["data"])
         self.assertEqual(posted["content_type"], "application/x-www-form-urlencoded")
 
+    def test_crypto_spot_declines_short_history(self):
+        from temple_flow.strategies.crypto_spot import evaluate_pullback
+        from decimal import Decimal
+
+        out = evaluate_pullback("XBTUSD", [], Decimal("100"), "0.0026", "0.0016", "100", "0.0001")
+        self.assertEqual(out["result"], "DECLINE")
+        self.assertEqual(out["reason"], "HISTORY_UNPROVEN")
+
     def test_kraken_missing_keys_are_unavailable(self):
         from temple_flow.adapters.kraken import KrakenAdapter
 

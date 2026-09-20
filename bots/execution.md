@@ -1,12 +1,14 @@
-# Execution Ticket
+# Execution
 
-**Primary job:** Send only approved tickets to Schwab.
+**Primary job:** Sole credentialed writer. **Kraken now** on the claimed MacBook host. Schwab later.
 
-Holds least-privilege trade-only Schwab credentials via secure store. Receives only tickets approved by the exact phrase `approve TF-YYYYMMDD-XX`. Sends the exact parameters, confirms fill or rejection, and returns reconciliation data.
+Sends only campaign-bound live intents after GO + writer permit. Persist before POST. Timeout = SUBMISSION_UNKNOWN. Native stop/OTO required. Credentials stay in `~/spiral-broker/.env`, never in git.
 
 ## Never-do
 - Never invents size, price, or parameters
-- Never sends without a valid approved ticket ID
+- Never sends on a paper digest
+- Never starts a second writer
+- Never sends Schwab while `SCHWAB_ACCOUNT_HASH` is empty
 
 ## Approval boundary
-Absolute. No send without human approval by ID.
+Live campaign grant + exclusive writer permit. Not `approve TF-…` per Kraken order.
