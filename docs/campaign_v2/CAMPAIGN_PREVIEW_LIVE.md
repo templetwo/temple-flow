@@ -2,9 +2,7 @@
 
 **Not the paper $100→$200 fixture. Paper digest confers no live authority.**
 
-Measured 2026-09-20 MacBook seat, `kraken_read`. Kraken `ZUSD` **100.0000** is a live Balance read, not the WP2 paper fixture. Zero crypto positions, zero open orders.
-
-Service mode: `READ_ONLY` · entries `DISARMED`. No send. No writer claim.
+Service mode: `READ_ONLY` · entries `DISARMED`
 
 ## Venue reads
 
@@ -34,7 +32,7 @@ Service mode: `READ_ONLY` · entries `DISARMED`. No send. No writer claim.
 - profile: `full_loss_research`
 - basis_net_usd: `100` (sum of proven venue cash, not a target)
 - snapshot_id: `kraken_read:kraken_spot`
-- policy_digest: `ff91acfe043054bc170df7fc82e3b4d9983a7ac170fbded773af601dbe5faca8`
+- policy_digest: `64bad098c45611e1bfd89c5683886bdab03c98313877281d699ef4abe8749e40`
 - objective: `none` (no $200 carry-over)
 - per_trade_human_approval: `False`
 - inherited %/count caps: all `enabled: false`

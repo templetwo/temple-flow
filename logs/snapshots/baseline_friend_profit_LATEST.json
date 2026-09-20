@@ -1,0 +1,146 @@
+{
+  "label": "FRIEND_PROFIT_BASELINE",
+  "purpose": "Mark capital state before autonomous campaign P&L attribution. Deposits are not profit.",
+  "asof_et": "2026-09-20 15:30:56 ",
+  "asof_utc": "2026-09-20T19:30:56Z",
+  "kraken": {
+    "probe": {
+      "mode": "READ_ONLY",
+      "entry_permission": "DISARMED",
+      "venues": {
+        "schwab": {
+          "capability_status": "UNAVAILABLE",
+          "features": {
+            "account_snapshot": "UNAVAILABLE",
+            "native_stop_on_entry": "DOCUMENTED_ONLY",
+            "submit": "UNAVAILABLE",
+            "borrow": "UNSUPPORTED",
+            "short": "UNSUPPORTED",
+            "fee_schedule": "UNKNOWN"
+          },
+          "snapshot_source": null,
+          "cash_available": null,
+          "equity": null,
+          "positions": [],
+          "working_orders": [],
+          "orders_ok": false,
+          "unavailable": "schwab: missing SCHWAB_ACCOUNT_HASH",
+          "note": "no simulated balances substituted"
+        },
+        "kraken_spot": {
+          "capability_status": "DOCUMENTED_ONLY",
+          "features": {
+            "account_snapshot": "DOCUMENTED_ONLY",
+            "submit": "DOCUMENTED_ONLY",
+            "native_stop": "DOCUMENTED_ONLY",
+            "borrow": "UNSUPPORTED",
+            "fee_schedule": "DOCUMENTED_ONLY"
+          },
+          "snapshot_source": "kraken_read",
+          "cash_available": "100",
+          "equity": null,
+          "positions": [],
+          "working_orders": [],
+          "orders_ok": true,
+          "unavailable": null,
+          "note": "no simulated balances substituted"
+        }
+      }
+    },
+    "desk_status": {
+      "campaign": null
+    },
+    "grant": {
+      "grant_id": "d5d602ee-36fa-4c42-84ce-1d6403ce8962",
+      "campaign_id": "TF-CAMPAIGN-LIVE",
+      "revision": 1,
+      "principal_ref": "operator:live-first",
+      "accepted_digest": "64bad098c45611e1bfd89c5683886bdab03c98313877281d699ef4abe8749e40",
+      "generation": 1,
+      "state": "ACTIVE",
+      "accepted_at": "2026-09-20T19:26:27Z",
+      "revoked_at": null
+    },
+    "runtime": {
+      "campaign_id": "TF-CAMPAIGN-LIVE",
+      "lifecycle": "RUNNING",
+      "entry_permission": "ENABLED",
+      "health_json": "{}"
+    },
+    "writer": {
+      "venue": "kraken_spot",
+      "account_alias": "KRAKEN_RESEARCH",
+      "host": "Anthonys-MacBook-Pro.local",
+      "pid": 29447,
+      "state": "ACTIVE",
+      "claimed_at": "2026-09-20T19:26:27Z",
+      "permit": "live-writer-29447"
+    },
+    "policy_digest": "64bad098c45611e1bfd89c5683886bdab03c98313877281d699ef4abe8749e40",
+    "campaign_id": "TF-CAMPAIGN-LIVE",
+    "basis_cash_zusd": "100"
+  },
+  "autonomy": {
+    "log_exists": true,
+    "log_bytes": 1870,
+    "last_lines": "     \"result\": \"DECLINE\",\n      \"reason\": \"NO_SETUP\",\n      \"pair\": \"XBTUSD\",\n      \"sma20\": \"78445.935\",\n      \"sma50\": \"73204.212\",\n      \"last\": \"81070.1\",\n      \"fees\": {\n        \"taker\": \"0.0026\",\n        \"maker\": \"0.0016\",\n        \"pair_decimals\": \"1\",\n        \"lot_decimals\": \"8\",\n        \"ordermin\": \"0.00005\",\n        \"wsname\": \"XBT/USD\"\n      }\n    },\n    {\n      \"result\": \"DECLINE\",\n      \"reason\": \"NO_SETUP\",\n      \"pair\": \"ETHUSD\",\n      \"sma20\": \"2490.454\",\n      \"sma50\": \"2273.0234\",\n      \"last\": \"2627.87\",\n      \"fees\": {\n        \"taker\": \"0.0026\",\n        \"maker\": \"0.0016\",\n        \"pair_decimals\": \"2\",\n        \"lot_decimals\": \"8\",\n        \"ordermin\": \"0.001\",\n        \"wsname\": \"ETH/USD\"\n      }\n    }\n  ],\n  \"submitted\": [],\n  \"economic_evidence\": \"EXPERIMENTAL_UNPROVEN\"\n}\n"
+  },
+  "schwab": {
+    "asof_note": "Studio live GET 2026-09-20 ~15:30:58 ET after token refresh",
+    "equity": 601.4,
+    "cash": 432.74,
+    "lmv": 168.66,
+    "sod": 601.4,
+    "positions": [
+      {
+        "symbol": "IBIT",
+        "qty": 3.0,
+        "avg": 43.676667,
+        "mv": 138.06
+      },
+      {
+        "symbol": "NOK",
+        "qty": 1.0,
+        "avg": 9.97,
+        "mv": 10.68
+      },
+      {
+        "symbol": "ETHA",
+        "qty": 1.0,
+        "avg": 18.75,
+        "mv": 19.92
+      }
+    ],
+    "stops_pending": [
+      {
+        "symbol": "IBIT",
+        "stop": 41.2,
+        "remaining": 1.0
+      },
+      {
+        "symbol": "IBIT",
+        "stop": 41.2,
+        "remaining": 2.0
+      },
+      {
+        "symbol": "ETHA",
+        "stop": 17.7,
+        "remaining": 1.0
+      },
+      {
+        "symbol": "NOK",
+        "stop": 9.45,
+        "remaining": 1.0
+      }
+    ],
+    "quotes_mark": {
+      "IBIT": 46.02,
+      "ETHA": 19.92,
+      "NOK": 10.68,
+      "NVO": 43.24
+    },
+    "ticket_queued": "TF-20260920-01 NOK Mon RTH"
+  },
+  "combined_funded_mark_usd": 701.4,
+  "enriched_at_utc": "2026-09-20T19:47:16Z"
+}
