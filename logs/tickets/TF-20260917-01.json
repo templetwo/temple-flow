@@ -1,0 +1,66 @@
+{
+  "ticket_id": "TF-20260917-01",
+  "created_at_utc": "2026-09-17T11:40:28Z",
+  "created_at_et": "2026-09-17 ~07:40 ET",
+  "risk_restamp_et": "2026-09-17 ~07:44 ET",
+  "desk": "Funds-beast mint; Risk Manager restamp PASS",
+  "lane": "protect_recycle",
+  "mode": "live",
+  "status": "PASS",
+  "verdict": "PASS",
+  "symbol": "NOK",
+  "side": "SELL",
+  "rth_only": true,
+  "trigger": "leftover recycle SLA age ~24d; post-FOMC; cash ~73%",
+  "sequence": [
+    {
+      "op": "cancel_by_id",
+      "order_id": "1007691287449",
+      "note": "NOK stop \u2014 RTH only"
+    },
+    {
+      "op": "place_oco",
+      "qty": 1,
+      "limit": 10.55,
+      "stop": 9.45,
+      "side": "SELL",
+      "tif": "GTC",
+      "note": "ONE OCO LIMIT 10.55 XOR STOP 9.45 after cancel"
+    }
+  ],
+  "book_at_size": {
+    "equity": 590.95,
+    "cash": 432.74,
+    "sod": 590.15,
+    "peak": 602.47,
+    "day_pct": 0.136,
+    "dd_pct": 1.912,
+    "nok_mark": 10.61,
+    "avg": 9.97,
+    "upl_pct": 6.42
+  },
+  "risk": {
+    "stop_risk_dollars_from_mark": 1.16,
+    "stop_risk_pct": 0.196,
+    "limit_vs_mark": "LIMIT 10.55 < mark 10.61 \u2192 marketable sell (flatten recycle)",
+    "max_risk_2_5pct": 14.77
+  },
+  "gates": {
+    "breaker_daily": false,
+    "breaker_dd": false,
+    "one_sell": true,
+    "rth_only": true
+  },
+  "approvals": {
+    "human_phrase_required": "approve TF-20260917-01",
+    "desk_may_approve": true,
+    "desk_approved": true,
+    "risk_pass_confirmed": true,
+    "approved_by": "desk_lead + Risk restamp PASS"
+  },
+  "execution": {
+    "sent": false,
+    "queued": "RTH ~09:35 cancel\u2192OCO"
+  },
+  "note": "Risk PASS restamp equity $590.95. Cancel 1007691287449 then OCO SELL LIMIT 10.55 XOR STOP 9.45. Mark 10.61 \u2014 limit marketable flatten OK for age SLA."
+}

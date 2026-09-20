@@ -1,0 +1,71 @@
+{
+  "ticket_id": "TF-20260917-02",
+  "created_at_utc": "2026-09-17T11:40:28Z",
+  "created_at_et": "2026-09-17 ~07:40 ET",
+  "risk_restamp_et": "2026-09-17 ~07:44 ET",
+  "desk": "Funds-beast mint; Risk Manager restamp PASS",
+  "lane": "mv",
+  "mv_session": "requires_arm_or_armed",
+  "mode": "live",
+  "status": "PASS",
+  "verdict": "PASS",
+  "symbol": "IBIT",
+  "side": "BUY",
+  "trigger": "post-FOMC cash deploy \u00a79; Strategist mid-box pullback 42.90",
+  "entry": {
+    "type": "limit",
+    "qty": 1,
+    "limit": 42.9,
+    "zone": [
+      42.8,
+      43.0
+    ],
+    "prefer": 42.9,
+    "tif": "GTC",
+    "attached_stop": 41.2,
+    "do_not_chase": true,
+    "cap_note": "Mark 43.1 \u2014 GTC 42.90 pullback below mark, NOT marketable; above Tue/Wed lows 42.37/42.43"
+  },
+  "risk": {
+    "risk_dollars": 1.7,
+    "risk_pct": 0.288,
+    "max_risk_2_5pct": 14.77,
+    "position_dollars": 42.9,
+    "position_pct": 7.26,
+    "combined_ibit_qty_if_fill": 4,
+    "combined_ibit_avg_if_fill": 43.4825,
+    "combined_ibit_stop_risk": 9.13,
+    "combined_ibit_stop_pct": 1.545,
+    "commission_slippage_est": 0.05,
+    "atr_filter": "OFF"
+  },
+  "book_at_size": {
+    "equity": 590.95,
+    "cash": 432.74,
+    "ibit_mark": 43.1,
+    "ibit_qty": 3,
+    "day_pct": 0.136,
+    "dd_pct": 1.912
+  },
+  "gates": {
+    "breaker_daily": false,
+    "breaker_dd": false,
+    "cash_funds": true,
+    "through_cap_chase": false,
+    "gap_air": false,
+    "etha_add": "VETO/HELD"
+  },
+  "approvals": {
+    "human_phrase_required": "approve TF-20260917-02",
+    "also_requires": "arm MV session",
+    "desk_may_approve": true,
+    "desk_approved": true,
+    "risk_pass_confirmed": true,
+    "approved_by": "desk_lead + Risk restamp PASS"
+  },
+  "execution": {
+    "sent": false,
+    "path": "arm MV \u2192 BUY 1 IBIT GTC 42.90 + STOP 41.20; no replace-up"
+  },
+  "note": "Risk PASS restamp equity $590.95. BUY 1 IBIT GTC 42.90 + STOP 41.20. Risk $1.70 (0.288%). Combined IBIT stop ~1.54% if 4sh. ETHA add VETO."
+}

@@ -1,0 +1,243 @@
+{
+  "source": "bash ~/temple-flow/scripts/run_snapshot.sh",
+  "captured_utc": "2026-09-17T20:31:06.926041+00:00",
+  "captured_et": "2026-09-17 16:31 ET",
+  "token_status": {
+    "status": "valid",
+    "refresh_valid": true,
+    "access_valid": true
+  },
+  "accounts_http": 200,
+  "orders_http": 200,
+  "quotes_http": 200,
+  "book": {
+    "equity": 591.99,
+    "cash": 432.74,
+    "avail": 432.74,
+    "bp": 432.74,
+    "lmv": 159.25,
+    "sod": 590.15,
+    "positions": [
+      {
+        "symbol": "IBIT",
+        "qty": 3.0,
+        "avg": 43.676667,
+        "mv": 130.11,
+        "dayPL": 0.99
+      },
+      {
+        "symbol": "NOK",
+        "qty": 1.0,
+        "avg": 9.97,
+        "mv": 10.63,
+        "dayPL": 0.49
+      },
+      {
+        "symbol": "ETHA",
+        "qty": 1.0,
+        "avg": 18.75,
+        "mv": 18.51,
+        "dayPL": 0.36
+      }
+    ]
+  },
+  "orders": [
+    {
+      "id": 1007927003404,
+      "status": "FILLED",
+      "type": null,
+      "price": null,
+      "stopPrice": null,
+      "duration": null,
+      "entered": "2026-09-15T14:19:29+0000",
+      "filledQty": null,
+      "remaining": null,
+      "qty": null,
+      "legs": []
+    },
+    {
+      "id": 1007927003405,
+      "status": "CANCELED",
+      "type": "LIMIT",
+      "price": 45.0,
+      "stopPrice": null,
+      "duration": "GOOD_TILL_CANCEL",
+      "entered": "2026-09-15T14:19:29+0000",
+      "filledQty": 0.0,
+      "remaining": 0.0,
+      "qty": 1.0,
+      "legs": [
+        {
+          "instruction": "SELL",
+          "symbol": "NVO",
+          "qty": 1.0
+        }
+      ]
+    },
+    {
+      "id": 1007927003406,
+      "status": "FILLED",
+      "type": "STOP",
+      "price": null,
+      "stopPrice": 42.5,
+      "duration": "GOOD_TILL_CANCEL",
+      "entered": "2026-09-15T14:19:29+0000",
+      "filledQty": 1.0,
+      "remaining": 0.0,
+      "qty": 1.0,
+      "legs": [
+        {
+          "instruction": "SELL",
+          "symbol": "NVO",
+          "qty": 1.0
+        }
+      ]
+    },
+    {
+      "id": 1007923976484,
+      "status": "FILLED",
+      "type": "LIMIT",
+      "price": 43.23,
+      "stopPrice": null,
+      "duration": "GOOD_TILL_CANCEL",
+      "entered": "2026-09-15T10:45:41+0000",
+      "filledQty": 1.0,
+      "remaining": 0.0,
+      "qty": 1.0,
+      "legs": [
+        {
+          "instruction": "BUY",
+          "symbol": "IBIT",
+          "qty": 1.0
+        }
+      ]
+    },
+    {
+      "id": 1007923976485,
+      "status": "PENDING_ACTIVATION",
+      "type": "STOP",
+      "price": null,
+      "stopPrice": 41.2,
+      "duration": "GOOD_TILL_CANCEL",
+      "entered": "2026-09-15T10:45:41+0000",
+      "filledQty": 0.0,
+      "remaining": 1.0,
+      "qty": 1.0,
+      "legs": [
+        {
+          "instruction": "SELL",
+          "symbol": "IBIT",
+          "qty": 1.0
+        }
+      ]
+    },
+    {
+      "id": 1007762031725,
+      "status": "PENDING_ACTIVATION",
+      "type": "STOP",
+      "price": null,
+      "stopPrice": 41.2,
+      "duration": "GOOD_TILL_CANCEL",
+      "entered": "2026-08-30T22:41:16+0000",
+      "filledQty": 0.0,
+      "remaining": 2.0,
+      "qty": 2.0,
+      "legs": [
+        {
+          "instruction": "SELL",
+          "symbol": "IBIT",
+          "qty": 2.0
+        }
+      ]
+    },
+    {
+      "id": 1007762031723,
+      "status": "CANCELED",
+      "type": "STOP",
+      "price": null,
+      "stopPrice": 42.5,
+      "duration": "GOOD_TILL_CANCEL",
+      "entered": "2026-08-30T22:41:16+0000",
+      "filledQty": 0.0,
+      "remaining": 0.0,
+      "qty": 1.0,
+      "legs": [
+        {
+          "instruction": "SELL",
+          "symbol": "NVO",
+          "qty": 1.0
+        }
+      ]
+    },
+    {
+      "id": 1007757064203,
+      "status": "PENDING_ACTIVATION",
+      "type": "STOP",
+      "price": null,
+      "stopPrice": 17.7,
+      "duration": "GOOD_TILL_CANCEL",
+      "entered": "2026-08-28T17:06:07+0000",
+      "filledQty": 0.0,
+      "remaining": 1.0,
+      "qty": 1.0,
+      "legs": [
+        {
+          "instruction": "SELL",
+          "symbol": "ETHA",
+          "qty": 1.0
+        }
+      ]
+    },
+    {
+      "id": 1007691287449,
+      "status": "PENDING_ACTIVATION",
+      "type": "STOP",
+      "price": null,
+      "stopPrice": 9.45,
+      "duration": "GOOD_TILL_CANCEL",
+      "entered": "2026-08-24T16:15:39+0000",
+      "filledQty": 0.0,
+      "remaining": 1.0,
+      "qty": 1.0,
+      "legs": [
+        {
+          "instruction": "SELL",
+          "symbol": "NOK",
+          "qty": 1.0
+        }
+      ]
+    }
+  ],
+  "quotes": {
+    "ETHA": {
+      "last": 18.52,
+      "mark": 18.51,
+      "bid": 18.51,
+      "ask": 18.52
+    },
+    "IBIT": {
+      "last": 43.3795,
+      "mark": 43.37,
+      "bid": 43.37,
+      "ask": 43.38
+    },
+    "NVO": {
+      "last": 43.21,
+      "mark": 43.2,
+      "bid": 43.2,
+      "ask": 43.28
+    },
+    "NOK": {
+      "last": 10.6397,
+      "mark": 10.63,
+      "bid": 10.63,
+      "ask": 10.64
+    },
+    "FBTC": {
+      "last": 66.66,
+      "mark": 66.61,
+      "bid": 66.61,
+      "ask": 66.64
+    }
+  }
+}

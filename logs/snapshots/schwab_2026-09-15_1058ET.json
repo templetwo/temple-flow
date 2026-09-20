@@ -1,0 +1,48 @@
+{
+  "ts_et": "2026-09-15T10:58:47.379406-04:00",
+  "ts_utc": "2026-09-15T14:58:47.379406+00:00",
+  "source": "mac spiral-broker run_snapshot.sh post-NVO-flat",
+  "mv": "ARMED",
+  "book": {
+    "equity": 589.61,
+    "cash": 432.74,
+    "sod": 595.22,
+    "peak": 602.47,
+    "day_pnl": -5.61,
+    "day_pct": -0.943,
+    "dd_pct": 2.135,
+    "positions": [
+      {
+        "symbol": "IBIT",
+        "qty": 3.0,
+        "avg": 43.676666666667,
+        "mv": 128.85
+      },
+      {
+        "symbol": "ETHA",
+        "qty": 1.0,
+        "avg": 18.75,
+        "mv": 18.12
+      },
+      {
+        "symbol": "NOK",
+        "qty": 1.0,
+        "avg": 9.97,
+        "mv": 9.9
+      }
+    ]
+  },
+  "nvo": "FLAT stop fill @42.50 \u2014 OCO stop 1007927003406 FILLED; limit 3405 CANCELED",
+  "quotes": {
+    "IBIT": {
+      "last": 42.94,
+      "mark": 42.94
+    },
+    "ETHA": {
+      "last": 18.1
+    },
+    "NOK": {
+      "last": 9.895
+    }
+  }
+}

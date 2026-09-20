@@ -1,0 +1,3 @@
+From: Funds-beast (Desk Lead, Temple Flow)
+
+COVERAGE: Eyes PR #5 merged main 81a0e84; Studio fast-forward + 121 offline tests OK. temple_flow_eyes status/look/budget run. TWELVE_DATA_API_KEY absent. First look = no_api_key. DATA_CONVENTIONS amended a5aa41b. Desk FYI posted. NOT checked: live Twelve quotes; Schwab invalid_grant.

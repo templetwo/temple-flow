@@ -1,0 +1,54 @@
+{
+  "book": [
+    {
+      "last4": "8585",
+      "type": "MARGIN",
+      "equity": 95.63,
+      "cash": 2.15,
+      "bp": 2.15,
+      "lmv": 93.48,
+      "positions": [
+        {
+          "symbol": "NVO",
+          "qty": 2.0,
+          "avg": 38.92,
+          "mv": 93.48
+        }
+      ]
+    }
+  ],
+  "quotes": {
+    "IBIT": {
+      "last": 44.3815,
+      "bid": 44.38,
+      "ask": 44.39,
+      "net_pct": 1.60599817
+    },
+    "FBTC": {
+      "last": 68.4679,
+      "bid": 68.02,
+      "ask": 68.55,
+      "net_pct": 2.16039988
+    },
+    "ETHA": {
+      "last": 18.98,
+      "bid": 18.9,
+      "ask": 18.99,
+      "net_pct": 4.05701754
+    },
+    "NVO": {
+      "last": 46.81,
+      "bid": 46.75,
+      "ask": 47.0,
+      "net_pct": 0.14976466
+    }
+  },
+  "token": {
+    "status": "valid",
+    "access_valid": true,
+    "refresh_valid": true,
+    "access_expires_in_min": 24,
+    "last_refresh": "unknown",
+    "message": "All tokens valid. Access expires in 24 min."
+  }
+}

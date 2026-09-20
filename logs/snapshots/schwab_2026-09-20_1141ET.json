@@ -1,0 +1,43 @@
+{
+  "ts_et": "2026-09-20T11:41:29.640012-04:00",
+  "ts_utc": "2026-09-20T15:41:29.640012+00:00",
+  "source": "mac spiral-broker run_snapshot.sh post-OAuth Sun restamp",
+  "book": {
+    "equity": 601.4,
+    "cash": 432.74,
+    "sod": 601.4,
+    "peak": 602.47,
+    "dd_pct": 0.178,
+    "positions": [
+      {
+        "symbol": "IBIT",
+        "qty": 3,
+        "avg": 43.676667,
+        "mv": 138.06
+      },
+      {
+        "symbol": "NOK",
+        "qty": 1,
+        "avg": 9.97,
+        "mv": 10.68
+      },
+      {
+        "symbol": "ETHA",
+        "qty": 1,
+        "avg": 18.75,
+        "mv": 19.92
+      }
+    ]
+  },
+  "quotes": {
+    "IBIT": {
+      "mark": 46.02
+    },
+    "NOK": {
+      "mark": 10.68
+    },
+    "ETHA": {
+      "mark": 19.92
+    }
+  }
+}
