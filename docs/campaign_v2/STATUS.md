@@ -9,6 +9,7 @@
 - XXBT 0.0012 + native stop `O55VHG-TY4DM-O3KIJT` @ 78454.6
 - KeepAlive `com.templetwo.temple-flow-kraken`
 - CLI: `snapshot`, `kraken-cycle`, `explain-cash`, `attribution`, `reconcile`, `flatten` (dry-run default)
+- Leftover ZUSD below pair `ordermin` is `INELIGIBLE_DUST` (no ETH send). Covering stop stays unless human `flatten --send`.
 
 ## Work packages
 

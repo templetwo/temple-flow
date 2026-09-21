@@ -76,3 +76,14 @@ def entry_debit(qty: Decimal, price: Decimal, fee_fraction: Decimal) -> Decimal:
     with localcontext() as ctx:
         ctx.prec = 50
         return qty * price * (1 + fee_fraction)
+
+
+def min_entry_notional(last: Decimal, ordermin: str, taker: str) -> Decimal:
+    """Gross quote for one AssetPairs ordermin at last, including entry fee."""
+    if not isinstance(last, Decimal):
+        raise MoneyError("min_entry_notional requires Decimal last")
+    om = amount(ordermin)
+    fee = amount(taker)
+    with localcontext() as ctx:
+        ctx.prec = 50
+        return om * last * (1 + fee)

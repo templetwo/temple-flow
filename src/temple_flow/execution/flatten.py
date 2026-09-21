@@ -1,14 +1,30 @@
-"""Venue flatten. Default dry-run. Does not touch Schwab from this host."""
+"""Venue flatten. Default dry-run. Does not touch Schwab from this host.
+
+Flatten --send still cancels covering stops then market-sells. The Kraken
+cycle never cancels a covering stop.
+"""
 
 from __future__ import annotations
 
-from decimal import Decimal
 from typing import Any
 
 from temple_flow.adapters.kraken import PAIR_ASSET, KrakenAdapter
-from temple_flow.adapters.protocol import SubmitAck, VenueUnavailable
+from temple_flow.adapters.protocol import SubmitAck, VenueUnavailable, WorkingOrder
 from temple_flow.execution.writer import WriterLease
 from temple_flow.money import dstr
+
+
+def held_assets(positions) -> set[str]:
+    return {p.symbol for p in positions if p.qty and p.qty > 0}
+
+
+def working_order_role(order: WorkingOrder, held: set[str]) -> str:
+    """covering_stop = sell stop-loss on an adopted long. Else orphaned."""
+    asset = PAIR_ASSET.get(order.symbol or "", order.symbol)
+    ot = (order.order_type or "").lower()
+    if (order.side or "").upper() == "SELL" and "stop-loss" in ot and asset in held:
+        return "covering_stop"
+    return "orphaned"
 
 
 def flatten_kraken(state_dir, *, send: bool) -> dict[str, Any]:
@@ -16,6 +32,7 @@ def flatten_kraken(state_dir, *, send: bool) -> dict[str, Any]:
     snap = adapter.snapshot()
     lease = WriterLease(state_dir, "kraken_spot", adapter.account_alias)
     permit = lease.permit()
+    held = held_assets(snap.positions)
     plan: list[dict[str, Any]] = []
     for o in snap.working_orders:
         plan.append(
@@ -25,6 +42,7 @@ def flatten_kraken(state_dir, *, send: bool) -> dict[str, Any]:
                 "symbol": o.symbol,
                 "side": o.side,
                 "type": o.order_type,
+                "role": working_order_role(o, held),
             }
         )
     for p in snap.positions:
@@ -38,7 +56,11 @@ def flatten_kraken(state_dir, *, send: bool) -> dict[str, Any]:
             "submitted": False,
             "plan": plan,
             "cash": dstr(snap.cash_available) if snap.cash_available is not None else None,
-            "note": "Pass --send to execute. Cancels working orders then market-sells adopted qty.",
+            "note": (
+                "Pass --send to execute. Cancels covering stops and orphaned "
+                "working orders, then market-sells adopted qty. Cycle never "
+                "cancels covering stops."
+            ),
         }
     if not permit:
         return {"dry_run": False, "submitted": False, "error": "blocked_no_writer", "plan": plan}

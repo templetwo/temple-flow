@@ -14,7 +14,8 @@ python3 scripts/temple_flow_desk.py --state $STATE attribution
 python3 scripts/temple_flow_desk.py --state $STATE reconcile
 python3 scripts/temple_flow_desk.py --state $STATE kraken-cycle          # evaluate
 python3 scripts/temple_flow_desk.py --state $STATE flatten               # dry-run
-# flatten --send cancels working stops then market-sells — human only
+# flatten --send cancels covering stops then market-sells — human only
+# cycle never cancels a covering stop; leftover < ordermin is INELIGIBLE_DUST
 
 python3 -m unittest discover -s tests -q
 ```

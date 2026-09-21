@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 from temple_flow.adapters.kraken import PAIR_ASSET, KrakenAdapter
@@ -10,16 +12,47 @@ from temple_flow.adapters.protocol import VenueUnavailable
 from temple_flow.money import dstr, flow_adjusted_pnl
 
 
-KRAKEN_BASELINE_ZUSD = Decimal("100")
-COMBINED_BASELINE = Decimal("701.40")  # documented mark, not re-verified Schwab
+REPO_ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_BASELINE = REPO_ROOT / "logs/snapshots/baseline_friend_profit_LATEST.json"
 
 
-def kraken_nav() -> dict[str, Any]:
-    adapter = KrakenAdapter()
+def load_friend_profit_baseline(path: Path | None = None) -> dict[str, Any]:
+    """Read the marked baseline from the snapshot JSON. Do not hardcode 100."""
+    dest = Path(path) if path is not None else DEFAULT_BASELINE
+    data = json.loads(dest.read_text())
+    kraken_cash = (
+        data.get("kraken", {})
+        .get("probe", {})
+        .get("venues", {})
+        .get("kraken_spot", {})
+        .get("cash_available")
+    )
+    if kraken_cash is None or str(kraken_cash) == "":
+        raise ValueError(f"baseline missing kraken cash_available: {dest}")
+    schwab_eq = data.get("schwab", {}).get("equity")
+    kraken_d = Decimal(str(kraken_cash))
+    schwab_d = Decimal(str(schwab_eq)) if schwab_eq is not None else None
+    combined = (schwab_d + kraken_d) if schwab_d is not None else None
+    return {
+        "path": str(dest),
+        "label": data.get("label"),
+        "kraken_baseline_zusd": kraken_d,
+        "schwab_equity_documented": schwab_d,
+        "combined_baseline_documented": combined,
+        "schwab_re_read": False,
+    }
+
+
+def kraken_nav(*, adapter: KrakenAdapter | None = None, baseline_path: Path | None = None) -> dict[str, Any]:
+    adapter = adapter or KrakenAdapter()
     try:
         snap = adapter.snapshot()
     except VenueUnavailable as exc:
         return {"ok": False, "unavailable": str(exc)}
+    try:
+        base = load_friend_profit_baseline(baseline_path)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        return {"ok": False, "unavailable": f"baseline unreadable: {exc}"}
     cash = snap.cash_available or Decimal("0")
     pos_mv = Decimal("0")
     marks = []
@@ -34,19 +67,27 @@ def kraken_nav() -> dict[str, Any]:
         mv = (last * p.qty) if last is not None else None
         if mv is not None:
             pos_mv += mv
-        marks.append({"symbol": p.symbol, "qty": dstr(p.qty), "last": dstr(last) if last else None, "mv": dstr(mv) if mv else None})
+        marks.append(
+            {
+                "symbol": p.symbol,
+                "qty": dstr(p.qty),
+                "last": dstr(last) if last else None,
+                "mv": dstr(mv) if mv else None,
+            }
+        )
     nav = cash + pos_mv
-    # No Kraken deposit after baseline in this campaign.
-    pnl = flow_adjusted_pnl(dstr(KRAKEN_BASELINE_ZUSD), dstr(nav), "0", "0")
+    pnl = flow_adjusted_pnl(dstr(base["kraken_baseline_zusd"]), dstr(nav), "0", "0")
+    combined = base["combined_baseline_documented"]
     return {
         "ok": True,
         "source": snap.source,
         "kraken_nav": dstr(nav),
-        "kraken_baseline_zusd": dstr(KRAKEN_BASELINE_ZUSD),
+        "kraken_baseline_zusd": dstr(base["kraken_baseline_zusd"]),
         "kraken_flow_adjusted_pnl": dstr(pnl),
+        "baseline_path": base["path"],
         "positions": marks,
         "cash": dstr(cash),
-        "combined_baseline_documented": dstr(COMBINED_BASELINE),
+        "combined_baseline_documented": dstr(combined) if combined is not None else None,
         "schwab_re_read": False,
         "economic_evidence": "EXPERIMENTAL_UNPROVEN",
         "note": "Deposits are not P&L. Schwab leg of the combined baseline was not re-read here.",
