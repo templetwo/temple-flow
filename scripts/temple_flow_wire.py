@@ -824,7 +824,19 @@ def plan_actions(rules: dict, book: dict) -> list[dict]:
         working_px = _f(o.get("price") or o.get("limit"))
         oid = o.get("id") or o.get("orderId")
 
-        if cap is not None and last is not None and last > cap:
+        # Cancel lane policy for buy entries when last > cap:
+        # - If working_px > cap: cancel (order itself violates cap)
+        # - If working_px ≤ cap: leave (resting pullback, do_not_chase)
+        # The through_cap_idea_dead reason applies only when BOTH the market
+        # and the working order are through the cap. A resting limit buy at or
+        # below the cap is exactly what do_not_chase permits.
+        if (
+            cap is not None
+            and last is not None
+            and last > cap
+            and working_px is not None
+            and working_px > cap
+        ):
             actions.append(
                 _action(
                     "cancel_abandon",
