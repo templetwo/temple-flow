@@ -18,7 +18,7 @@
     "time_et": "16:00"
   },
   "auto_approve_remint": {
-    "enabled": false,
+    "enabled": true,
     "_comment": "Auto-carry approval when same ticket reminted at same/better price within cap"
   }
 }

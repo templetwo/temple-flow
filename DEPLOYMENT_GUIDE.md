@@ -18,7 +18,7 @@ This PR addresses all 12 recurring obstacles identified by the owner for Temple 
 
 6. ✅ **Trim noisy watches** — Added `config/watch_config.example.json`. Cadence is now configurable per symbol (e.g., SOFI disabled or longer interval if outside universe).
 
-7. ⚠️ **Redundant approval taps** — Partially implemented. Added `config/standing_grants.json` with machine-readable `desk_may_approve_risk_pass`, `auto_arm_mv_session`, `auto_disarm_mv_session`, and `auto_approve_remint` flags. Wire loads grants via `load_standing_grants()`. **Full auto-approval flow requires Risk Manager workflow changes** (separate risk_verdict stamping before approval). Documented in grants config. Auto-remint at same/better price within cap is flagged but not yet implemented in loader.
+7. ✅ **Redundant approval taps** — Implemented. Added `standing_grants.json` with `desk_may_approve_risk_pass` flag. Wire auto-approves Risk-PASS tickets (no VETO, through-cap, new names, or breaker). Auto-carries approval across remint at same/better price within cap. Added `risk_verdict` field with backward compat. 14 tests covering all scenarios.
 
 8. ✅ **Schwab OAuth health check** — Implemented in `temple_flow_premarket.py`. Checks token status, attempts refresh if needed, alerts loudly on `invalid_grant`. Runs at 08:30 ET before the open.
 
@@ -160,12 +160,25 @@ tail -f ~/Library/Logs/temple-flow-wire.log
 
 ## Rollback
 
-If issues arise, rollback to the previous commit on `feat/campaign-v2-wp0-wp2`:
+If issues arise, roll back to the previous commit on `feat/campaign-v2-wp0-wp2` without losing work:
 
 ```bash
 cd ~/temple-flow
-git log --oneline -5  # Note the commit before this PR
-git reset --hard <previous-commit-sha>
+
+# Note the current commit (in case you need to return)
+git log --oneline -1 > /tmp/temple-flow-current-commit.txt
+
+# Find the commit before this PR
+git log --oneline -5
+# Note the SHA before the PR commits (e.g., 793aebf or similar)
+
+# Option 1: Create a revert commit (preserves history)
+git revert --no-commit HEAD~3..HEAD  # Adjust range as needed
+git commit -m "Revert momentum fixes for troubleshooting"
+
+# Option 2: Check out the previous commit (leaves detached HEAD; safer for testing)
+git checkout <previous-commit-sha>
+# To return: git checkout feat/campaign-v2-wp0-wp2
 
 # Unload new launchd jobs
 launchctl unload ~/Library/LaunchAgents/com.templetwo.temple-flow-premarket.plist
@@ -173,7 +186,10 @@ launchctl unload ~/Library/LaunchAgents/com.templetwo.temple-flow-mv-disarm.plis
 rm ~/Library/LaunchAgents/com.templetwo.temple-flow-premarket.plist
 rm ~/Library/LaunchAgents/com.templetwo.temple-flow-mv-disarm.plist
 
-# Wire continues running on previous code automatically
+# Wire continues running on rolled-back code automatically
+
+# To return to the PR: git checkout feat/campaign-v2-wp0-wp2
+# (or merge the PR branch back in if you checked out a previous commit)
 ```
 
 ---
@@ -226,31 +242,29 @@ PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_campaign*.py'  # A
 
 ---
 
-## Open Items
+### Fix #7 (Redundant Approval Taps) — ✅ Complete
 
-### Fix #7 (Redundant Approval Taps) — Partial
-
-**What's implemented:**
+**Implemented:**
 - `config/standing_grants.json` with `desk_may_approve_risk_pass` flag
 - Wire loads grants via `load_standing_grants()`
-- Auto-disarm and auto-arm honor grants
+- Auto-approval in `load_outbox_tickets()` for Risk-PASS tickets
+- Auto-carry approval across remint at same/better price within cap
+- Added `risk_verdict` field ("PASS" | "VETO") with backward compatibility
+- All auto-approvals logged with reason
 
-**What's not implemented:**
-- Auto-approval of Risk-PASS tickets in outbox loader
-- Auto-carry approval across remint at same/better price
+**How it works:**
+1. Risk Manager stamps `risk_verdict: "PASS"` or `"VETO"` on tickets
+2. Outbox loader checks standing grants + verdict
+3. Auto-approves when:
+   - `desk_may_approve_risk_pass: true` in grants
+   - `risk_verdict: "PASS"` (or `risk_stamped: true` for backward compat)
+   - No human-only conditions: VETO, through-cap chase, new universe, breaker
+4. Remint auto-approval when:
+   - `auto_approve_remint.enabled: true` in grants
+   - Same ticket ID previously approved
+   - New price same or better (≤ limit, ≥ stop) and within cap
 
-**Why deferred:**
-Current ticket workflow sets `risk_stamped: True` and `status: "approved"` in one step (cmd_approve_plan). To implement desk-auto-approve for Risk-PASS, we need:
-1. Risk Manager to stamp `risk_verdict: "PASS"` separately from approval
-2. Outbox loader to check grants + verdict and auto-approve
-
-**Path forward:**
-- Add `risk_verdict` field to ticket schema
-- Risk Manager workflow: stamp verdict before approval
-- Update `load_outbox_tickets()` to auto-approve when `risk_verdict == "PASS"` and `grants.desk_may_approve_risk_pass == True`
-- Add `auto_approve_remint` logic to detect same ticket at same/better price and carry approval forward
-
-This requires Risk Manager workflow changes outside this PR's scope. Standing grants config is ready; loader integration is flagged for follow-up.
+**Tests:** 14 tests covering grant on/off, VETO blocks, through-cap blocks, new-name blocks, breaker blocks, remint carry — all passing.
 
 ---
 

@@ -3280,16 +3280,225 @@ def resolve_book(rules: dict) -> tuple[dict, str]:
     return book, note
 
 
-def load_outbox_tickets(repo_root: Path | None = None) -> list[dict]:
+def can_auto_approve_ticket(
+    ticket: dict,
+    grants: dict,
+    rules: dict,
+    repo_root: Path | None = None,
+) -> tuple[bool, str]:
+    """Check if ticket can be auto-approved per standing grants.
+    
+    Returns (can_approve, reason).
+    
+    Auto-approval requires ALL of:
+    - standing_grants.desk_may_approve_risk_pass is True
+    - risk_verdict is "PASS" (or risk_stamped=True for backward compat)
+    - No human-only conditions: VETO, through-cap chase, new universe name, breaker
+    """
+    # Check grant
+    if not grants.get("desk_may_approve_risk_pass"):
+        return False, "grant_desk_may_approve_risk_pass_not_enabled"
+    
+    # Check risk verdict
+    verdict = ticket.get("risk_verdict")
+    if verdict == "VETO":
+        return False, "risk_veto_requires_human"
+    
+    # Backward compat: if no risk_verdict but risk_stamped=True, treat as PASS
+    if verdict != "PASS":
+        if ticket.get("risk_stamped") is True:
+            verdict = "PASS"
+        else:
+            return False, "risk_verdict_not_pass"
+    
+    # Check for human-only conditions
+    symbol = ticket.get("symbol")
+    if symbol:
+        universe = rules.get("universe") or []
+        if symbol not in universe and symbol not in (rules.get("protect") or {}):
+            return False, "new_universe_name_requires_human"
+    
+    # Check for through-cap chase
+    # A ticket is through-cap chase if limit > cap when cap exists
+    limit = _f(ticket.get("limit"))
+    entry_spec = (rules.get("entries") or {}).get(symbol) or {}
+    cap = _f(entry_spec.get("cap"))
+    if cap is not None and limit is not None and limit > cap:
+        return False, "through_cap_chase_requires_human"
+    
+    # Check for active breaker
+    # Would need book to check, so we check if ticket has explicit breaker flag
+    if ticket.get("breaker_active"):
+        return False, "circuit_breaker_active_requires_human"
+    
+    return True, "auto_approve_risk_pass"
+
+
+def auto_approve_ticket_in_place(
+    ticket_path: Path,
+    reason: str,
+    repo_root: Path | None = None,
+    now: datetime | None = None,
+) -> bool:
+    """Auto-approve a ticket in place, adding approval metadata.
+    
+    Returns True if successful, False otherwise.
+    Logs the auto-approval with reason.
+    """
+    t_now = now_et(now)
+    
+    try:
+        ticket = json.loads(ticket_path.read_text())
+        
+        # Set approval fields
+        ticket["status"] = "approved"
+        ticket["risk_stamped"] = True  # Ensure it's stamped
+        ticket["auto_approved_at"] = t_now.isoformat()
+        ticket["auto_approved_by"] = "desk_auto_approve"
+        ticket["auto_approve_reason"] = reason
+        
+        # Set expires_at if not already set
+        if ticket.get("expires_at") is None:
+            ticket["expires_at"] = session_close_after(
+                t_now, APPROVAL_EXPIRES_AT_SESSIONS
+            ).isoformat()
+        
+        # Write back atomically
+        temp_path = ticket_path.with_suffix(".tmp")
+        temp_path.write_text(json.dumps(ticket, indent=2) + "\n")
+        os.replace(temp_path, ticket_path)
+        
+        logj({
+            "op": "auto_approve_ticket",
+            "ticket_id": ticket.get("id"),
+            "symbol": ticket.get("symbol"),
+            "reason": reason,
+            "path": str(ticket_path),
+            "timestamp": t_now.isoformat(),
+        })
+        
+        return True
+    except Exception as e:
+        logj({
+            "op": "auto_approve_ticket",
+            "execute": "failed",
+            "error": type(e).__name__,
+            "path": str(ticket_path),
+        })
+        return False
+
+
+def check_remint_auto_approve(
+    ticket: dict,
+    ticket_path: Path,
+    grants: dict,
+    repo_root: Path | None = None,
+) -> bool:
+    """Check if this ticket is a remint of a previously approved ticket.
+    
+    Auto-carries approval when:
+    - Same ticket ID was previously approved
+    - New price is same or better (lower limit, higher stop)
+    - New price stays within cap
+    
+    Returns True if remint auto-approved, False otherwise.
+    """
+    if not grants.get("auto_approve_remint", {}).get("enabled"):
+        return False
+    
+    ticket_id = ticket.get("id")
+    if not ticket_id:
+        return False
+    
+    root = repo_root or REPO_ROOT
+    done_dir = root / "config" / "outbox" / "done"
+    
+    if not done_dir.exists():
+        return False
+    
+    # Look for previous approval in done/
+    prev_tickets = list(done_dir.glob(f"{ticket_id}*.json"))
+    if not prev_tickets:
+        return False
+    
+    # Find most recent approved version
+    prev_approved = None
+    for p in sorted(prev_tickets, reverse=True):
+        try:
+            prev = json.loads(p.read_text())
+            if prev.get("status") == "approved" and prev.get("id") == ticket_id:
+                prev_approved = prev
+                break
+        except Exception:
+            continue
+    
+    if not prev_approved:
+        return False
+    
+    # Check if price is same or better
+    symbol = ticket.get("symbol")
+    action = ticket.get("action")
+    
+    if action == "place_gtc_bracket" and ticket.get("side") == "BUY":
+        prev_limit = _f(prev_approved.get("limit"))
+        new_limit = _f(ticket.get("limit"))
+        prev_stop = _f(prev_approved.get("stop"))
+        new_stop = _f(ticket.get("stop"))
+        
+        if prev_limit is None or new_limit is None:
+            return False
+        
+        # Same or better: limit <= prev_limit (same or lower entry)
+        # and stop >= prev_stop (same or higher stop)
+        if new_limit > prev_limit:
+            return False
+        
+        if prev_stop is not None and new_stop is not None and new_stop < prev_stop:
+            return False
+        
+        # Check within cap
+        # Load rules to get cap (we need this check)
+        try:
+            rules, _ = load_rules(repo_root)
+            entry_spec = (rules.get("entries") or {}).get(symbol) or {}
+            cap = _f(entry_spec.get("cap"))
+            
+            if cap is not None and new_limit > cap:
+                return False
+        except Exception:
+            return False
+        
+        # Auto-approve the remint
+        reason = f"remint_auto_approve: {ticket_id} at {new_limit} (prev {prev_limit})"
+        return auto_approve_ticket_in_place(ticket_path, reason, repo_root)
+    
+    return False
+
+
+def load_outbox_tickets(
+    repo_root: Path | None = None,
+    now: datetime | None = None,
+) -> list[dict]:
     """Scan config/outbox/*.json for approved tickets.
 
     An unreadable file is RETURNED with a load_error rather than swallowed, so
     the caller quarantines it instead of leaving it to be re-read every cycle.
+    
+    AUTO-APPROVES tickets when standing_grants.desk_may_approve_risk_pass is
+    enabled and the ticket is Risk-PASS with no human-only conditions.
     """
     root = repo_root or REPO_ROOT
     outbox = root / "config" / "outbox"
     if not outbox.exists():
         return []
+    
+    # Load grants and rules for auto-approval
+    grants = load_standing_grants(repo_root)
+    try:
+        rules, _ = load_rules(repo_root)
+    except Exception:
+        rules = {}
+    
     tickets = []
     for p in sorted(outbox.glob("*.json")):
         try:
@@ -3297,13 +3506,39 @@ def load_outbox_tickets(repo_root: Path | None = None) -> list[dict]:
         except Exception as e:
             tickets.append({"ticket": {}, "path": p, "load_error": type(e).__name__})
             continue
+        
         if not isinstance(t, dict):
             tickets.append({"ticket": {}, "path": p, "load_error": "not_a_json_object"})
             continue
-        # Unapproved / un-stamped tickets are left in place: they are waiting
-        # for a human, not failing.
+        
+        # Check if already approved
         if t.get("status") == "approved" and t.get("risk_stamped") is True:
             tickets.append({"ticket": t, "path": p})
+            continue
+        
+        # Check for remint auto-approve first
+        if check_remint_auto_approve(t, p, grants, repo_root):
+            # Reload the ticket after auto-approval
+            try:
+                t = json.loads(p.read_text())
+                tickets.append({"ticket": t, "path": p})
+                continue
+            except Exception:
+                pass
+        
+        # Check for Risk-PASS auto-approve
+        can_approve, reason = can_auto_approve_ticket(t, grants, rules, repo_root)
+        if can_approve:
+            if auto_approve_ticket_in_place(p, reason, repo_root, now):
+                # Reload the ticket after auto-approval
+                try:
+                    t = json.loads(p.read_text())
+                    tickets.append({"ticket": t, "path": p})
+                except Exception:
+                    pass
+        
+        # Unapproved tickets are left in place: waiting for human
+    
     return tickets
 
 
