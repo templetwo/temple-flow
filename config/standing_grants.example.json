@@ -1,0 +1,24 @@
+{
+  "_comment": "Standing grants (AMENDMENTS_2026-09-15 §7, §8). Copy to standing_grants.json and edit.",
+  "desk_may_approve_risk_pass": true,
+  "desk_may_arm_mv_session": true,
+  "auto_arm_mv_session": {
+    "enabled": false,
+    "conditions": {
+      "cash_pct_min": 0.20,
+      "no_hard_hold": true
+    },
+    "schedule": {
+      "weekdays": [1, 2, 3, 4, 5],
+      "time_et": "09:25"
+    }
+  },
+  "auto_disarm_mv_session": {
+    "enabled": true,
+    "time_et": "16:00"
+  },
+  "auto_approve_remint": {
+    "enabled": false,
+    "_comment": "Auto-carry approval when same ticket reminted at same/better price within cap"
+  }
+}

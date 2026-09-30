@@ -38,3 +38,4 @@ tf-actloop.patch
 config/campaigns/
 data/campaign_v2/
 .temple_flow_paper/
+config/standing_grants.json
