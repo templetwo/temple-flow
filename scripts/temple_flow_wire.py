@@ -881,6 +881,41 @@ def plan_actions(rules: dict, book: dict) -> list[dict]:
             )
             continue
 
+        # Anthony, 2026-09-29, "i need them to be aggressive" / "go".
+        # A named replace is the only raise the wire will do on its own.
+        # The order id, the symbol, and a ceiling are all in the rule. A
+        # missing id, a different order, or a last above the ceiling leaves
+        # the working buy where it is. Protect stops are sells and never
+        # reach this branch.
+        replace = spec.get("replace_order") if isinstance(spec.get("replace_order"), dict) else None
+        if (
+            replace
+            and str(replace.get("order_id") or "") == str(oid)
+            and working_px is not None
+            and last is not None
+            and cap is not None
+        ):
+            ceiling = _f(replace.get("max_limit")) or cap
+            new_limit = min(last, ceiling, cap)
+            new_limit = math.floor(new_limit * 100.0 + 1e-9) / 100.0
+            if new_limit > working_px + 1e-9 and new_limit <= cap + 1e-9:
+                actions.append(
+                    _action(
+                        "cancel_abandon",
+                        sym,
+                        "aggressive_replace_authorized",
+                        {
+                            "order_id": oid,
+                            "working_price": working_px,
+                            "new_limit": round(new_limit, 2),
+                            "last": last,
+                            "cap": cap,
+                            "authorized_by": replace.get("authorized_by"),
+                        },
+                    )
+                )
+                continue
+
         # working GTC (or unknown) still under cap: leave it. never raise.
         if working_px is not None and cap is not None and working_px > cap:
             actions.append(
@@ -3279,6 +3314,31 @@ def run_cycle(
                 }
             ]
             logj(plan_results[0])
+    # Authorized replace, after the cancel has been planned and, in RTH,
+    # sent. The new ticket is a buy with the standing stop attached. It is
+    # written only when this cycle planned the cancel of the named order, so
+    # a later cycle that no longer sees that order does not stack a second
+    # buy. The outbox gate on the next cycle is what sends it.
+    if book_leg_proven(book, "quotes") and book_leg_proven(book, "orders"):
+        try:
+            for action in planned:
+                if action.get("reason") != "aggressive_replace_authorized":
+                    continue
+                note = write_replace_ticket(action, rules, book, repo_root=repo_root, now=now)
+                if note is not None:
+                    logj(note)
+                    plan_results.append(note)
+        except Exception as exc:
+            logj(
+                {
+                    "op": "replace_ticket",
+                    "execute": "exception",
+                    "error": type(exc).__name__,
+                    "sent": False,
+                    "mutated": False,
+                }
+            )
+
     return [header] + outbox_results + executed + plan_results
 
 
@@ -3332,6 +3392,102 @@ def resolve_book(rules: dict) -> tuple[dict, str]:
         fb["armed"] = session_armed()
         return fb, note
     return book, note
+
+
+def write_replace_ticket(
+    action: dict,
+    rules: dict,
+    book: dict,
+    repo_root: Path | None = None,
+    now: datetime | None = None,
+) -> dict | None:
+    """Write the buy that replaces an order Anthony named.
+
+    The limit is the one the planner already floored to last and to the cap.
+    The stop is the standing stop. Qty is the standing qty, then the risk
+    clip. One file per order id, so a cycle that runs twice does not write
+    two tickets for the same replace.
+    """
+    root = repo_root or REPO_ROOT
+    sym = str(action.get("symbol") or "").upper()
+    params = action.get("params") or {}
+    limit = _f(params.get("new_limit"))
+    spec = (rules.get("entries") or {}).get(sym) or {}
+    stop = _f(spec.get("stop"))
+    if limit is None or stop is None or stop >= limit:
+        return {
+            "op": "replace_ticket",
+            "symbol": sym,
+            "execute": "skipped",
+            "reason": "stop_not_below_new_limit",
+            "sent": False,
+            "mutated": False,
+        }
+    qty = spec.get("qty") or 1
+    sized = size_candidate(
+        {"limit": limit, "stop": stop, "qty_hint": qty, "symbol": sym},
+        rules,
+        _f(book.get("equity")),
+    )
+    if sized.get("qty", 0) <= 0:
+        return {
+            "op": "replace_ticket",
+            "symbol": sym,
+            "execute": "skipped",
+            "reason": sized.get("reason") or "qty_clipped_to_zero",
+            "sent": False,
+            "mutated": False,
+        }
+    order_id = params.get("order_id")
+    ticket_id = f"TF-REPLACE-{sym}-{order_id}"
+    dest = root / "config" / "outbox" / (ticket_id + ".json")
+    if dest.exists():
+        return {
+            "op": "replace_ticket",
+            "symbol": sym,
+            "execute": "skipped",
+            "reason": "already_written",
+            "sent": False,
+            "mutated": False,
+        }
+    last = _f(params.get("last"))
+    ticket = {
+        "id": ticket_id,
+        "status": "proposed",
+        "risk_stamped": False,
+        "risk_verdict": "PASS",
+        "action": "place_gtc_bracket",
+        "symbol": sym,
+        "side": "BUY",
+        "stop_side": "SELL",
+        "qty": int(sized["qty"]),
+        "limit": round(limit, 2),
+        "stop": float(stop),
+        "lane": "mv",
+        "arm_required": True,
+        "replaces_order_id": order_id,
+        "source": "anthony_go_2026-09-29_aggressive",
+        "validity": {
+            "max_data_age_minutes": 30.0,
+            "planned_last": last,
+            "max_last": _f(spec.get("cap")),
+        },
+    }
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix(dest.suffix + ".tmp")
+    tmp.write_text(json.dumps(ticket, indent=2, sort_keys=True) + "\n")
+    os.replace(tmp, dest)
+    return {
+        "op": "replace_ticket",
+        "symbol": sym,
+        "execute": "written",
+        "ticket_id": ticket_id,
+        "limit": round(limit, 2),
+        "stop": float(stop),
+        "qty": int(sized["qty"]),
+        "sent": False,
+        "mutated": False,
+    }
 
 
 def maybe_write_pullback_ticket(
