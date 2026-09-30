@@ -1,0 +1,14 @@
+{
+  "_comment": "Watch configuration for market data polling. Copy to watch_config.json and edit.",
+  "watches": {
+    "SOFI": {
+      "enabled": false,
+      "interval_seconds": 300,
+      "_comment": "SOFI is not in live universe. Disabled by default. If enabled, set interval to reduce noise."
+    },
+    "default": {
+      "interval_seconds": 900,
+      "_comment": "Default polling interval for universe symbols"
+    }
+  }
+}

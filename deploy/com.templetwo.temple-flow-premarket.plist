@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Temple Flow pre-market automation. Runs before the open for:
+         - Git branch/SHA drift check
+         - Schwab OAuth token health check (attempts refresh)
+         - MV session auto-arm (if conditions met)
+         - Market data API key check -->
+    <key>Label</key>
+    <string>com.templetwo.temple-flow-premarket</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/tony_studio/spiral-broker-prod/dashboard/api/venv_new/bin/python3</string>
+        <string>/Users/tony_studio/temple-flow/scripts/temple_flow_premarket.py</string>
+        <string>--check</string>
+        <string>all</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/tony_studio/temple-flow</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>SPIRAL_BROKER_ROOT</key>
+        <string>/Users/tony_studio/spiral-broker</string>
+    </dict>
+    <!-- Run at 08:30 ET (12:30 UTC in EDT, 13:30 UTC in EST) on weekdays.
+         Adjust Hour value based on DST. Use 12 for EDT, 13 for EST. -->
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict>
+            <key>Weekday</key>
+            <integer>1</integer>
+            <key>Hour</key>
+            <integer>12</integer>
+            <key>Minute</key>
+            <integer>30</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key>
+            <integer>2</integer>
+            <key>Hour</key>
+            <integer>12</integer>
+            <key>Minute</key>
+            <integer>30</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key>
+            <integer>3</integer>
+            <key>Hour</key>
+            <integer>12</integer>
+            <key>Minute</key>
+            <integer>30</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key>
+            <integer>4</integer>
+            <key>Hour</key>
+            <integer>12</integer>
+            <key>Minute</key>
+            <integer>30</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key>
+            <integer>5</integer>
+            <key>Hour</key>
+            <integer>12</integer>
+            <key>Minute</key>
+            <integer>30</integer>
+        </dict>
+    </array>
+    <key>StandardOutPath</key>
+    <string>/Users/tony_studio/Library/Logs/temple-flow-premarket.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/tony_studio/Library/Logs/temple-flow-premarket.log</string>
+</dict>
+</plist>

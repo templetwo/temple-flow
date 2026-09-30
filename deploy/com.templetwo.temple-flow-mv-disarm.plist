@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- MV session auto-disarm at 16:00 ET. Runs once per weekday at close. -->
+    <key>Label</key>
+    <string>com.templetwo.temple-flow-mv-disarm</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/tony_studio/spiral-broker-prod/dashboard/api/venv_new/bin/python3</string>
+        <string>/Users/tony_studio/temple-flow/scripts/temple_flow_premarket.py</string>
+        <string>--mv-disarm-only</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/tony_studio/temple-flow</string>
+    <!-- Run at 16:05 ET (20:05 UTC in EDT, 21:05 UTC in EST) on weekdays -->
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict>
+            <key>Weekday</key>
+            <integer>1</integer>
+            <key>Hour</key>
+            <integer>20</integer>
+            <key>Minute</key>
+            <integer>5</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key>
+            <integer>2</integer>
+            <key>Hour</key>
+            <integer>20</integer>
+            <key>Minute</key>
+            <integer>5</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key>
+            <integer>3</integer>
+            <key>Hour</key>
+            <integer>20</integer>
+            <key>Minute</key>
+            <integer>5</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key>
+            <integer>4</integer>
+            <key>Hour</key>
+            <integer>20</integer>
+            <key>Minute</key>
+            <integer>5</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key>
+            <integer>5</integer>
+            <key>Hour</key>
+            <integer>20</integer>
+            <key>Minute</key>
+            <integer>5</integer>
+        </dict>
+    </array>
+    <key>StandardOutPath</key>
+    <string>/Users/tony_studio/Library/Logs/temple-flow-mv-disarm.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/tony_studio/Library/Logs/temple-flow-mv-disarm.log</string>
+</dict>
+</plist>

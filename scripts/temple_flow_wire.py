@@ -324,20 +324,66 @@ def load_rules(repo_root: Path | None = None) -> tuple[dict, Path]:
     return rules, path
 
 
+def load_standing_grants(repo_root: Path | None = None) -> dict:
+    """Load config/standing_grants.json with safe defaults.
+    
+    Returns dict with desk_may_approve_risk_pass, auto_arm_mv_session, etc.
+    Never raises; returns safe defaults when file is missing or unreadable.
+    """
+    root = repo_root or REPO_ROOT
+    path = root / "config" / "standing_grants.json"
+    
+    defaults = {
+        "desk_may_approve_risk_pass": False,
+        "desk_may_arm_mv_session": False,
+        "auto_arm_mv_session": {"enabled": False},
+        "auto_disarm_mv_session": {"enabled": True, "time_et": "16:00"},
+        "auto_approve_remint": {"enabled": False},
+    }
+    
+    if not path.exists():
+        return defaults
+    
+    try:
+        grants = json.loads(path.read_text())
+        # Merge with defaults
+        for key, value in defaults.items():
+            if key not in grants:
+                grants[key] = value
+            elif isinstance(value, dict) and isinstance(grants[key], dict):
+                for sub_key, sub_value in value.items():
+                    if sub_key not in grants[key]:
+                        grants[key][sub_key] = sub_value
+        return grants
+    except Exception:
+        return defaults
+
+
 def session_armed(repo_root: Path | None = None, now: datetime | None = None) -> bool:
-    """Arm file on disk. Auto-disarm at `until` (ISO) or 16:00 ET that day."""
+    """Arm file on disk. Auto-disarm at `until` (ISO) or 16:00 ET that day.
+    
+    Also checks standing_grants for auto_disarm and runs the disarm check if enabled.
+    """
     if os.environ.get("TEMPLE_FLOW_ARMED") == "1":
         return True
-    path = (repo_root or REPO_ROOT) / "config" / "mv_session.json"
+    
+    root = repo_root or REPO_ROOT
+    path = root / "config" / "mv_session.json"
+    
     if not path.exists():
         return False
+    
     try:
         d = json.loads(path.read_text())
     except Exception:
         return False
+    
     if not d.get("armed"):
         return False
+    
     t = now_et(now)
+    
+    # Check explicit until time
     until = d.get("until")
     if until:
         try:
@@ -349,7 +395,23 @@ def session_armed(repo_root: Path | None = None, now: datetime | None = None) ->
         except Exception:
             pass
     elif t.hour >= 16:
+        # Hard disarm at 16:00 ET
+        # If standing_grants auto_disarm is enabled, update the file
+        try:
+            grants_path = root / "config" / "standing_grants.json"
+            if grants_path.exists():
+                grants = json.loads(grants_path.read_text())
+                auto_disarm = grants.get("auto_disarm_mv_session", {})
+                if auto_disarm.get("enabled"):
+                    # Disarm in the file
+                    d["armed"] = False
+                    d["disarmed_at"] = t.isoformat()
+                    d["disarm_source"] = f"auto-disarm 16:00 ET {t.strftime('%Y-%m-%d')}"
+                    path.write_text(json.dumps(d, indent=2) + "\n")
+        except Exception:
+            pass  # Disarm check failed, but we still return False
         return False
+    
     return True
 
 
