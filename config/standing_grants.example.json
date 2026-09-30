@@ -1,0 +1,8 @@
+{
+  "_comment": "Copy to standing_grants.json. A missing file approves nothing and still disarms at 16:00. Anthony's revoke phrase closes approval on the next cycle.",
+  "desk_may_approve_risk_pass": false,
+  "auto_arm_mv_session": false,
+  "auto_disarm_mv_session": true,
+  "carry_reprice": true,
+  "revoke": null
+}

@@ -36,5 +36,8 @@ tf-actloop.patch
 
 # v2 campaign isolated runtime (never commit live grants or paper ledgers)
 config/campaigns/
+# The live grant. The example ships; this file is the switch and must not
+# ride a pull onto another machine already set to true.
+config/standing_grants.json
 data/campaign_v2/
 .temple_flow_paper/

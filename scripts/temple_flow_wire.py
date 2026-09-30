@@ -38,6 +38,12 @@ except ImportError:  # pragma: no cover - only when imported from another cwd
     import temple_flow_strategy as strategy
 
 try:
+    import desk_momentum
+except ImportError:  # pragma: no cover
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import desk_momentum
+
+try:
     from zoneinfo import ZoneInfo
 
     ET = ZoneInfo("America/New_York")
@@ -214,6 +220,13 @@ TERMINAL_REFUSALS = frozenset(
         # `validity` block, the daemon re-read the world at execution time, and
         # a condition the human approved is no longer true.
         "idea_stale_reevaluated",
+        # Standing-grant refusals. A later cycle does not get to retry a VETO
+        # or a raised limit; those wait on a person.
+        "risk_veto",
+        "reprice_limit_raised",
+        "reprice_stop_widened",
+        "reprice_qty_raised",
+        "not_a_pass",
     }
 )
 """Refusals that QUARANTINE the ticket to config/outbox/failed/ immediately.
@@ -824,7 +837,19 @@ def plan_actions(rules: dict, book: dict) -> list[dict]:
         working_px = _f(o.get("price") or o.get("limit"))
         oid = o.get("id") or o.get("orderId")
 
-        if cap is not None and last is not None and last > cap:
+        # Cancel lane policy for buy entries when last > cap:
+        # - If working_px > cap: cancel (order itself violates cap)
+        # - If working_px ≤ cap: leave (resting pullback, do_not_chase)
+        # The through_cap_idea_dead reason applies only when BOTH the market
+        # and the working order are through the cap. A resting limit buy at or
+        # below the cap is exactly what do_not_chase permits.
+        if (
+            cap is not None
+            and last is not None
+            and last > cap
+            and working_px is not None
+            and working_px > cap
+        ):
             actions.append(
                 _action(
                     "cancel_abandon",
@@ -873,18 +898,33 @@ def plan_actions(rules: dict, book: dict) -> list[dict]:
             )
             continue
 
+        stale = None
+        if working_px is not None and last is not None:
+            quote = (book.get("quotes") or {}).get(sym) or {}
+            atr = (
+                _f(spec.get("atr"))
+                or _f((book.get("atr") or {}).get(sym))
+                or _f(quote.get("atr"))
+                or _f(quote.get("atr14"))
+            )
+            sessions = int(_f(spec.get("sessions_working")) or 0)
+            if atr is not None and atr > 0:
+                stale = desk_momentum.staleness(working_px, last, atr, sessions, cap)
+        leave_params = {
+            "order_id": oid,
+            "working_price": working_px,
+            "last": last,
+            "cap": cap,
+            "duration": dur or None,
+        }
+        if stale is not None:
+            leave_params["staleness"] = stale
         actions.append(
             _action(
                 "leave",
                 sym,
-                "working_pullback_under_cap_no_chase",
-                {
-                    "order_id": oid,
-                    "working_price": working_px,
-                    "last": last,
-                    "cap": cap,
-                    "duration": dur or None,
-                },
+                "stale_pullback_flagged" if stale and stale.get("action") == "flag" else "working_pullback_under_cap_no_chase",
+                leave_params,
             )
         )
 
@@ -3046,6 +3086,94 @@ def run_cycle(
     }
     logj(header)
 
+    # Session clock before the outbox. An arm written here is what the gate
+    # reads through book["armed"], so a 09:25 cycle can send a PASS ticket
+    # the same cycle instead of waiting 15 minutes for the next read.
+    # A disarm is a file write only. It cancels nothing.
+    clock_note = None
+    try:
+        clock_note = desk_momentum.apply_session_clock(
+            repo_root or REPO_ROOT, book, rules, now or now_et()
+        )
+        if clock_note.get("wrote") == "arm":
+            book["armed"] = True
+        elif clock_note.get("wrote") == "disarm":
+            book["armed"] = False
+        logj({**clock_note, "sent": False, "mutated": False, "dry_run": True})
+    except Exception as exc:
+        logj(
+            {
+                "op": "session_clock",
+                "execute": "exception",
+                "error": type(exc).__name__,
+                "sent": False,
+                "mutated": False,
+                "dry_run": True,
+            }
+        )
+
+    # Evidence stamps. None of these authorize a POST.
+    try:
+        logj(desk_momentum.git_drift(repo_root or REPO_ROOT))
+        logj(desk_momentum.kraken_stamp())
+        logj(desk_momentum.yahoo_fallback_stamp(bool(os.environ.get("TWELVE_DATA_API_KEY"))))
+        idle = desk_momentum.idle_cash(book, rules)
+        idle.update({"op": "idle_cash", "sent": False, "mutated": False})
+        logj(idle)
+    except Exception as exc:
+        logj(
+            {
+                "op": "desk_stamps",
+                "execute": "exception",
+                "error": type(exc).__name__,
+                "sent": False,
+                "mutated": False,
+            }
+        )
+
+    # A fillable pullback for a free live name, written before the grant
+    # stamp so this same cycle can approve it and gate it. RTH only. The
+    # writer does not POST. A name with a position or a working buy is not
+    # offered. A price the cap leaves unfillable is a flag, not a ticket.
+    if rth and book.get("armed") and book_leg_proven(book, "quotes") and book_leg_proven(book, "orders"):
+        try:
+            grants_now = desk_momentum.load_grants(repo_root or REPO_ROOT)
+            idle_now = desk_momentum.idle_cash(book, rules)
+            if grants_now.get("desk_may_approve_risk_pass") and not grants_now.get("revoked"):
+                for sym in idle_now.get("names") or []:
+                    note = maybe_write_pullback_ticket(
+                        sym, rules, book, repo_root=repo_root, now=now
+                    )
+                    if note is not None:
+                        logj(note)
+        except Exception as exc:
+            logj(
+                {
+                    "op": "pullback_ticket",
+                    "execute": "exception",
+                    "error": type(exc).__name__,
+                    "sent": False,
+                    "mutated": False,
+                }
+            )
+
+    # Standing grant. A PASS ticket is stamped approved before the loader
+    # runs, so this cycle can gate it. The stamp is not a waiver: every
+    # refusal in gate_outbox_ticket still applies.
+    try:
+        for note in stamp_desk_approvals(repo_root, now):
+            logj(note)
+    except Exception as exc:
+        logj(
+            {
+                "op": "desk_approve",
+                "execute": "exception",
+                "error": type(exc).__name__,
+                "sent": False,
+                "mutated": False,
+            }
+        )
+
     # --- outbox lane ---
     # Every ticket is gated against the same rules/book as a planned entry, and
     # every ticket is wrapped: a poison ticket must never stop the protect lane
@@ -3204,6 +3332,177 @@ def resolve_book(rules: dict) -> tuple[dict, str]:
         fb["armed"] = session_armed()
         return fb, note
     return book, note
+
+
+def maybe_write_pullback_ticket(
+    sym: str,
+    rules: dict,
+    book: dict,
+    repo_root: Path | None = None,
+    now: datetime | None = None,
+) -> dict | None:
+    """Write one fillable GTC pullback ticket for a free live name.
+
+    Priced one ATR under last, floored to the standing cap, never above a
+    prior working limit. Sized by size_candidate, which is the same clip the
+    gate re-applies. Returns a log line, or None when there is nothing to
+    write. Does not POST. The outbox lane on the next cycle is the sender,
+    and only after gate_outbox_ticket passes.
+    """
+    root = repo_root or REPO_ROOT
+    spec = (rules.get("entries") or {}).get(sym) or {}
+    if not spec.get("enabled", False):
+        return None
+    last = last_price(book, sym)
+    atr = _f(spec.get("atr")) or _f((book.get("atr") or {}).get(sym))
+    cap = _f(spec.get("cap"))
+    if last is None or atr is None or atr <= 0:
+        return {
+            "op": "pullback_ticket",
+            "symbol": sym,
+            "execute": "skipped",
+            "reason": "atr_or_last_missing",
+            "sent": False,
+            "mutated": False,
+        }
+    suggested = desk_momentum.suggest_pullback(last, atr, cap, _f(spec.get("limit")))
+    if not suggested.get("fillable") or suggested.get("limit") is None:
+        return {
+            "op": "pullback_ticket",
+            "symbol": sym,
+            "execute": "flagged",
+            "reason": suggested.get("reason"),
+            "suggested": suggested,
+            "sent": False,
+            "mutated": False,
+        }
+    limit = float(suggested["limit"])
+    stop = _f(spec.get("stop"))
+    if stop is None or stop >= limit:
+        return {
+            "op": "pullback_ticket",
+            "symbol": sym,
+            "execute": "skipped",
+            "reason": "stop_not_below_limit",
+            "sent": False,
+            "mutated": False,
+        }
+    sized = size_candidate(
+        {"limit": limit, "stop": stop, "symbol": sym}, rules, _f(book.get("equity"))
+    )
+    if sized.get("qty", 0) <= 0:
+        return {
+            "op": "pullback_ticket",
+            "symbol": sym,
+            "execute": "skipped",
+            "reason": sized.get("reason") or "qty_clipped_to_zero",
+            "sent": False,
+            "mutated": False,
+        }
+    t_now = now_et(now)
+    ticket_id = "TF-PULL-" + t_now.strftime("%Y%m%d") + "-" + sym
+    dest = root / "config" / "outbox" / (ticket_id + ".json")
+    if dest.exists():
+        return {
+            "op": "pullback_ticket",
+            "symbol": sym,
+            "execute": "skipped",
+            "reason": "already_written_today",
+            "sent": False,
+            "mutated": False,
+        }
+    ticket = {
+        "id": ticket_id,
+        "status": "proposed",
+        "risk_stamped": False,
+        "risk_verdict": "PASS",
+        "action": "place_gtc_bracket",
+        "symbol": sym,
+        "side": "BUY",
+        "stop_side": "SELL",
+        "qty": int(sized["qty"]),
+        "limit": limit,
+        "stop": float(stop),
+        "lane": "mv",
+        "arm_required": True,
+        "source": "desk_momentum.suggest_pullback",
+        "validity": {
+            "max_data_age_minutes": 30.0,
+            "planned_last": last,
+            "planned_atr": atr,
+            "max_last": cap if cap is not None else last,
+        },
+    }
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix(dest.suffix + ".tmp")
+    tmp.write_text(json.dumps(ticket, indent=2, sort_keys=True) + "\n")
+    os.replace(tmp, dest)
+    return {
+        "op": "pullback_ticket",
+        "symbol": sym,
+        "execute": "written",
+        "ticket_id": ticket_id,
+        "limit": limit,
+        "qty": int(sized["qty"]),
+        "reason": suggested.get("reason"),
+        "sent": False,
+        "mutated": False,
+    }
+
+
+def stamp_desk_approvals(repo_root: Path | None = None, now: datetime | None = None) -> list[dict]:
+    """Apply the standing grant to outbox files before the loader reads them.
+
+    A PASS ticket becomes approved. A reprice keeps its approval only when
+    the limit did not rise, the stop did not widen, and the qty did not grow.
+    A VETO is moved to failed/. A missing grants file approves nothing.
+
+    This writes files. It does not place an order. The gate still runs.
+    """
+    root = repo_root or REPO_ROOT
+    t_now = now_et(now)
+    grants = desk_momentum.load_grants(root)
+    outbox = root / "config" / "outbox"
+    notes: list[dict] = []
+    if not outbox.exists():
+        return notes
+    for path in sorted(outbox.glob("*.json")):
+        try:
+            raw = json.loads(path.read_text())
+        except Exception:
+            continue
+        if not isinstance(raw, dict):
+            continue
+        if raw.get("status") == "approved" and raw.get("risk_stamped") is True:
+            continue
+        decided = desk_momentum.approve_ticket(raw, grants, t_now)
+        note = {
+            "op": "desk_approve",
+            "ticket_id": raw.get("id"),
+            "reason": decided["reason"],
+            "acted": decided["acted"],
+            "sent": False,
+            "mutated": False,
+        }
+        if decided["reason"] == "risk_veto":
+            move_ticket(path, "failed", root)
+            note["execute"] = "quarantined"
+            notes.append(note)
+            continue
+        if not decided["acted"]:
+            notes.append(note)
+            continue
+        stamped = decided["ticket"]
+        if stamped.get("expires_at") is None:
+            stamped["expires_at"] = session_close_after(
+                t_now, APPROVAL_EXPIRES_AT_SESSIONS
+            ).isoformat()
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(stamped, indent=2, sort_keys=True) + "\n")
+        os.replace(tmp, path)
+        note["execute"] = "stamped"
+        notes.append(note)
+    return notes
 
 
 def load_outbox_tickets(repo_root: Path | None = None) -> list[dict]:
