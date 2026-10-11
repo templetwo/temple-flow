@@ -190,10 +190,18 @@ def posted_symbols(calls: dict) -> list[str]:
 
 
 class TestThroughCap(unittest.TestCase):
-    def test_through_cap_abandons_no_reprice_up(self):
+    def test_resting_pullback_left_when_last_through_cap_but_working_px_under(self):
+        """Resting buy limit at or below cap must not be canceled when last > cap.
+        
+        Mon 2026-09-28 live failure: desk-approved GTC buy limits for ETHA @19.70
+        (cap 19.9) and IBIT @45.00 (cap 43.9) were canceled when last > cap, even
+        though their working prices were at or below the cap. A resting pullback
+        (do_not_chase) must be left alone; through_cap_idea_dead should only
+        cancel when BOTH last > cap AND working_px > cap.
+        """
         rules = example_rules()
         book = base_book(
-            quotes={"ETHA": {"last": 18.92}},
+            quotes={"ETHA": {"last": 18.92}},  # last above cap (18.9)
             orders=[
                 {
                     "id": "1007750322357",
@@ -201,8 +209,8 @@ class TestThroughCap(unittest.TestCase):
                     "side": "BUY",
                     "status": "WORKING",
                     "type": "LIMIT",
-                    "price": 18.75,
-                    "duration": "DAY",
+                    "price": 18.75,  # working_px below cap (18.9)
+                    "duration": "GOOD_TILL_CANCEL",
                     "qty": 1,
                     "filledQty": 0,
                     "remaining": 1,
@@ -210,31 +218,144 @@ class TestThroughCap(unittest.TestCase):
             ],
         )
         actions = plan_actions(rules, book)
-        abandons = [
-            a for a in actions if a["symbol"] == "ETHA" and a["op"] == "cancel_abandon"
-        ]
-        self.assertTrue(abandons, actions)
+        etha = [a for a in actions if a.get("symbol") == "ETHA"]
+        
+        # Order must be LEFT, not canceled
+        leaves = [a for a in etha if a["op"] == "leave"]
+        self.assertTrue(leaves, f"resting pullback must be left: {etha}")
         self.assertTrue(
-            any(a["reason"] == "through_cap_idea_dead" for a in abandons),
-            abandons,
+            any(a["reason"] == "working_pullback_under_cap_no_chase" for a in leaves),
+            leaves,
         )
-        for a in actions:
+        
+        # No cancel_abandon for through_cap_idea_dead
+        abandons = [a for a in etha if a["op"] == "cancel_abandon"]
+        self.assertFalse(
+            any(a["reason"] == "through_cap_idea_dead" for a in abandons),
+            f"resting pullback must not be canceled: {abandons}",
+        )
+        
+        # Never reprice up or place new
+        for a in etha:
             self.assertNotEqual(a["op"], "replace")
             self.assertNotEqual(a["op"], "reprice_up")
-            px = (a.get("params") or {}).get("limit") or (a.get("params") or {}).get(
-                "price"
-            )
-            if a["op"] == "place_gtc_bracket" and a["symbol"] == "ETHA":
-                self.fail(f"must not place after through-cap: {a}")
-            if px is not None and a["symbol"] == "ETHA":
-                self.assertLessEqual(float(px), 18.90)
-                self.assertLessEqual(float(px), 18.75)  # never raise working 18.75
-        places = [
-            a
-            for a in actions
-            if a["op"] == "place_gtc_bracket" and a["symbol"] == "ETHA"
-        ]
-        self.assertEqual(places, [])
+            if a["op"] == "place_gtc_bracket":
+                self.fail(f"must not place new when last through cap: {a}")
+    
+    def test_working_limit_through_cap_still_cancels(self):
+        """Working buy with limit > cap must still be canceled.
+        
+        If the order itself is priced above the cap, it must be canceled
+        regardless of where last is. When both last > cap and working_px > cap,
+        either through_cap_idea_dead or working_limit_through_cap is acceptable.
+        """
+        rules = example_rules()
+        book = base_book(
+            quotes={"ETHA": {"last": 19.50}},
+            orders=[
+                {
+                    "id": "1007750322358",
+                    "symbol": "ETHA",
+                    "side": "BUY",
+                    "status": "WORKING",
+                    "type": "LIMIT",
+                    "price": 19.00,  # working_px > cap (18.9)
+                    "duration": "GOOD_TILL_CANCEL",
+                    "qty": 1,
+                    "filledQty": 0,
+                    "remaining": 1,
+                }
+            ],
+        )
+        actions = plan_actions(rules, book)
+        etha = [a for a in actions if a.get("symbol") == "ETHA"]
+        
+        # Order must be canceled
+        abandons = [a for a in etha if a["op"] == "cancel_abandon"]
+        self.assertTrue(abandons, f"order with working_px > cap must be canceled: {etha}")
+        # Accept either reason when both conditions are true
+        self.assertTrue(
+            any(
+                a["reason"] in ("through_cap_idea_dead", "working_limit_through_cap")
+                for a in abandons
+            ),
+            abandons,
+        )
+    
+    def test_live_failure_case_mon_20260928(self):
+        """Regression: Mon 2026-09-28 live wire canceled valid resting pullbacks.
+        
+        Wave 1 orders: ETHA @19.70 (cap 19.9), IBIT @45.00 (cap 43.9)
+        Both were canceled when marks moved above their caps, even though the
+        orders themselves were at or below their respective caps.
+        """
+        rules = example_rules()
+        rules["entries"]["ETHA"]["cap"] = 19.9
+        rules["entries"]["IBIT"] = {
+            "enabled": False,  # not placing new, just testing cancel lane
+            "qty": 1,
+            "limit": 45.00,
+            "stop": 43.00,
+            "cap": 43.9,
+        }
+        book = base_book(
+            quotes={
+                "ETHA": {"last": 20.00},  # above cap 19.9
+                "IBIT": {"last": 46.00},  # above cap 43.9
+            },
+            orders=[
+                {
+                    "id": "1008090346868",  # wave 1 ETHA
+                    "symbol": "ETHA",
+                    "side": "BUY",
+                    "status": "WORKING",
+                    "type": "LIMIT",
+                    "price": 19.70,  # at/below cap 19.9
+                    "duration": "GOOD_TILL_CANCEL",
+                    "qty": 1,
+                    "remaining": 1,
+                },
+                {
+                    "id": "1008090346869",  # wave 1 IBIT
+                    "symbol": "IBIT",
+                    "side": "BUY",
+                    "status": "WORKING",
+                    "type": "LIMIT",
+                    "price": 45.00,  # above cap 43.9 (should cancel)
+                    "duration": "GOOD_TILL_CANCEL",
+                    "qty": 1,
+                    "remaining": 1,
+                },
+            ],
+        )
+        actions = plan_actions(rules, book)
+        
+        # ETHA @19.70 with cap 19.9: working_px < cap, must be LEFT
+        etha = [a for a in actions if a.get("symbol") == "ETHA"]
+        etha_leaves = [a for a in etha if a["op"] == "leave"]
+        self.assertTrue(etha_leaves, f"ETHA resting pullback must be left: {etha}")
+        etha_abandons = [a for a in etha if a["op"] == "cancel_abandon"]
+        self.assertFalse(
+            any(a["reason"] == "through_cap_idea_dead" for a in etha_abandons),
+            f"ETHA must not be canceled via through_cap_idea_dead: {etha_abandons}",
+        )
+        
+        # IBIT @45.00 with cap 43.9: working_px > cap, must be CANCELED
+        ibit = [a for a in actions if a.get("symbol") == "IBIT"]
+        ibit_abandons = [a for a in ibit if a["op"] == "cancel_abandon"]
+        self.assertTrue(
+            ibit_abandons,
+            f"IBIT with working_px > cap must be canceled: {ibit}",
+        )
+        # Either through_cap_idea_dead (both last and working_px > cap)
+        # or working_limit_through_cap (working_px > cap) is acceptable
+        self.assertTrue(
+            any(
+                a["reason"] in ("through_cap_idea_dead", "working_limit_through_cap")
+                for a in ibit_abandons
+            ),
+            ibit_abandons,
+        )
 
 
 class TestProtectOnly(unittest.TestCase):
